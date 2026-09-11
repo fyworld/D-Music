@@ -27,6 +27,9 @@
     <uses-permission
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
+    <!-- v1.4.19：应用内更新——下载 APK 后拉起系统安装器（Android 8+ 需此权限，
+         用户在「安装未知应用」设置中授予本 App 后才能安装） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Android 11+ 包可见性：打赏页拉起微信需要声明（否则
          getLaunchIntentForPackage 返回 null，微信装了也"看不见"） -->
@@ -63,5 +66,16 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <!-- v1.4.19：应用内更新——APK 安装用的 FileProvider（Android 7+ content URI） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

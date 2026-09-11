@@ -122,6 +122,17 @@ fun SolaraApp() {
         }
     }
 
+    // v1.4.19：启动静默检查版本更新——失败静默跳过（不打扰用户）；
+    // 发现新版本时弹更新提示（用户可「暂不更新」，之后仍可从关于页进入）。
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    val updateInfo by com.solara.music.data.UpdateManager.updateInfo.collectAsState()
+    LaunchedEffect(Unit) {
+        com.solara.music.data.UpdateManager.checkSilently()
+    }
+    LaunchedEffect(updateInfo) {
+        if (updateInfo != null) showUpdateDialog = true
+    }
+
     val downloadTasks by DownloadManager.tasks.collectAsState()
     val activeDownloads = downloadTasks.count { it.status == DownloadStatus.DOWNLOADING }
 
@@ -329,6 +340,16 @@ fun SolaraApp() {
                 downloadTarget = null
             }
         )
+    }
+
+    // v1.4.19：启动时发现新版本的更新弹窗（关于页入口共用同一组件）
+    updateInfo?.let { info ->
+        if (showUpdateDialog) {
+            com.solara.music.ui.components.UpdateDialog(
+                info = info,
+                onDismiss = { showUpdateDialog = false }   // 关弹窗不取消下载（后台继续）
+            )
+        }
     }
 }
 

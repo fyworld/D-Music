@@ -35,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -46,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -63,8 +65,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.solara.music.BuildConfig
 import com.solara.music.R
+import com.solara.music.data.UpdateManager
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.launch
 
 /** 三个超链接的跳转目标。 */
 private const val URL_REPO = "https://github.com/fyworld/D-Music.git"
@@ -74,12 +78,16 @@ private const val URL_ISSUES = "https://github.com/fyworld/D-Music/issues"
 /**
  * 关于页面：应用图标 + "D music" 标题 + 介绍文案 + 三个超链接
  * （开源地址 / 下载地址 / 提交问题）+ 尾部免责声明 + 打赏入口。
+ * v1.4.19：版本号下显示「发现新版本」入口（启动检查有更新时）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AboutScreen(onBack: () -> Unit) {
     val uriHandler = LocalUriHandler.current
     var showDonate by remember { mutableStateOf(false) }
+    var showUpdate by remember { mutableStateOf(false) }
+    val updateInfo by UpdateManager.updateInfo.collectAsState()
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier
@@ -131,10 +139,34 @@ fun AboutScreen(onBack: () -> Unit) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "v1.4.18",
+                text = "v${BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            // v1.4.19：发现新版本——版本号下入口（启动静默检查有更新时显示）
+            if (updateInfo != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { showUpdate = true }
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.SystemUpdate,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "发现新版本 v${updateInfo?.versionName}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(24.dp))
@@ -232,6 +264,16 @@ fun AboutScreen(onBack: () -> Unit) {
     // v1.4.18：打赏弹层
     if (showDonate && BuildConfig.DONATE_ENABLED) {
         DonateSheet(onDismiss = { showDonate = false })
+    }
+
+    // v1.4.19：版本更新弹窗（共享组件 ui/components/UpdateDialog.kt）
+    updateInfo?.let { info ->
+        if (showUpdate) {
+            com.solara.music.ui.components.UpdateDialog(
+                info = info,
+                onDismiss = { showUpdate = false }   // 关弹窗不取消下载（后台继续）
+            )
+        }
     }
 }
 

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.4.19：应用内更新 APK 安装用的 FileProvider 路径声明
+     （getExternalFilesDir 对应 external-files-path） -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path
+        name="update_apks"
+        path="." />
+    <files-path
+        name="internal_updates"
+        path="updates/" />
+</paths>

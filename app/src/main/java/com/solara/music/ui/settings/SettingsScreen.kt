@@ -272,7 +272,7 @@ fun SettingsScreen() {
 
         // 底部版本信息
         Text(
-            text = "版本：D music v1.4.18",
+            text = "版本：D music v${com.solara.music.BuildConfig.VERSION_NAME}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
