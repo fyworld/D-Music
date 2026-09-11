@@ -3,6 +3,7 @@
 package com.solara.music.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,11 +12,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.LibraryAdd
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -33,49 +38,55 @@ import com.solara.music.data.Song
 import com.solara.music.data.Store
 
 /**
- * v1.4.13 #63：列表批量操作栏——「存为歌单」「下载全部」两个入口，
+ * v1.4.13 #63：列表批量操作——「存为歌单」「下载全部」收进更多菜单（v1.4.17 改版）。
+ * 标题行 = 标题文字 + 右侧更多按钮；**end padding 12dp 与 SongRow 卡片内边距对齐**
+ * （SongRow 的更多按钮在卡片 12dp 水平内边距内，不加会偏右约一个字符宽）。
  * 探索/搜索结果列表头部共用。空列表时隐藏（由调用方控制）。
  */
 @Composable
 fun BatchActionBar(
-    songCount: Int,
+    title: String,
     onSaveToPlaylist: () -> Unit,
     onDownloadAll: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(bottom = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+            .padding(bottom = 4.dp, end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        TextButton(onClick = onSaveToPlaylist, modifier = Modifier.weight(1f)) {
-            Icon(
-                Icons.Filled.LibraryAdd,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.size(4.dp))
-            Text("存为歌单")
-        }
-        TextButton(onClick = onDownloadAll, modifier = Modifier.weight(1f)) {
-            Icon(
-                Icons.Filled.Download,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Spacer(Modifier.size(4.dp))
-            Text("下载全部")
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
+        Box {
+            IconButton(onClick = { menuOpen = true }) {
+                Icon(
+                    Icons.Filled.MoreVert,
+                    contentDescription = "更多",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text("存为歌单") },
+                    leadingIcon = {
+                        Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null)
+                    },
+                    onClick = { menuOpen = false; onSaveToPlaylist() }
+                )
+                DropdownMenuItem(
+                    text = { Text("下载全部") },
+                    leadingIcon = { Icon(Icons.Filled.Download, null) },
+                    onClick = { menuOpen = false; onDownloadAll() }
+                )
+            }
         }
     }
-    Text(
-        text = "$songCount 首",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.outline,
-        modifier = Modifier.padding(start = 12.dp)
-    )
 }
 
 /**

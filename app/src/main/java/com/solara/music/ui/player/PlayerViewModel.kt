@@ -41,4 +41,21 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /**
+     * v1.4.17：重新加载当前歌歌词（保存校准歌词后调用）。
+     * lastKey 去重会挡住同歌重取，这里强制清空再走一遍取词流程，
+     * 让显示的 LRC 立即换成校准后的新时间轴。
+     */
+    fun refreshLyrics() {
+        val song = PlayerManager.currentSong.value ?: return
+        viewModelScope.launch {
+            lastKey = null
+            lyrics.value = emptyList()
+            lyricLoading.value = true
+            val raw = LyricRepository.fetchLyric(getApplication(), song)
+            lyrics.value = LrcParser.parse(raw)
+            lyricLoading.value = false
+        }
+    }
 }

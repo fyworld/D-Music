@@ -157,17 +157,9 @@ fun ExploreScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     item {
-                        Text(
-                            text = "本次新增（${results.size} 首）",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 4.dp)
-                        )
-                    }
-                    item {
-                        // v1.4.13 #63：一键存歌单 / 一键下载全部
+                        // v1.4.17：标题行 + 更多按钮（存为歌单/下载全部收进菜单）
                         BatchActionBar(
-                            songCount = results.size,
+                            title = "本次新增（${results.size} 首）",
                             onSaveToPlaylist = { showSavePlaylist = true },
                             onDownloadAll = { showBatchDownload = true }
                         )

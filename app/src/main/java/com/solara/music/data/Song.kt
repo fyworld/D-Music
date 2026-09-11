@@ -52,11 +52,12 @@ internal fun cleanArtist(raw: String): String {
 data class MusicSource(val id: String, val label: String)
 
 object Sources {
+    // v1.4.17：源显示名改为通用代号（源 A/B/C/D）——id 不变，API 调用与已存设置不受影响
     val all = listOf(
-        MusicSource("netease", "网易云"),
-        MusicSource("kuwo", "酷我"),
-        MusicSource("joox", "JOOX"),
-        MusicSource("bilibili", "B站")
+        MusicSource("netease", "源 A"),
+        MusicSource("kuwo", "源 B"),
+        MusicSource("joox", "源 C"),
+        MusicSource("bilibili", "源 D")
     )
 
     fun labelOf(id: String): String = all.firstOrNull { it.id == id }?.label ?: id

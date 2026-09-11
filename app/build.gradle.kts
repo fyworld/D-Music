@@ -11,8 +11,8 @@ android {
         applicationId = "com.solara.music"
         minSdk = 24
         targetSdk = 34
-        versionCode = 28
-        versionName = "1.4.14"
+        versionCode = 31
+        versionName = "1.4.17"
     }
 
     buildTypes {

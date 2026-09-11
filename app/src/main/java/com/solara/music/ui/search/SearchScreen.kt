@@ -2,6 +2,7 @@
 
 package com.solara.music.ui.search
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,18 +14,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -86,12 +89,58 @@ fun SearchScreen(
             .padding(horizontal = 16.dp)
     ) {
         Spacer(Modifier.height(12.dp))
+        // v1.4.17：音源选择收进搜索框左侧——点源名弹下拉菜单切换，页面更干净
+        var sourceMenuOpen by remember { mutableStateOf(false) }
+        val currentSourceLabel = Sources.all.firstOrNull { it.id == source }?.label ?: "源 A"
         OutlinedTextField(
             value = query,
             onValueChange = vm::onQueryChange,
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("搜索歌曲、歌手、专辑") },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            leadingIcon = {
+                Box {
+                    Row(
+                        modifier = Modifier
+                            .clickable { sourceMenuOpen = true }
+                            .padding(start = 8.dp, end = 2.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = currentSourceLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Icon(
+                            Icons.Filled.ArrowDropDown,
+                            contentDescription = "选择音源",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = sourceMenuOpen,
+                        onDismissRequest = { sourceMenuOpen = false }
+                    ) {
+                        Sources.all.forEach { src ->
+                            DropdownMenuItem(
+                                text = { Text(src.label) },
+                                trailingIcon = {
+                                    if (src.id == source) {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                },
+                                onClick = {
+                                    sourceMenuOpen = false
+                                    vm.changeSource(src.id)
+                                }
+                            )
+                        }
+                    }
+                }
+            },
             trailingIcon = {
                 if (query.isNotEmpty()) {
                     IconButton(onClick = { vm.onQueryChange("") }) {
@@ -104,18 +153,6 @@ fun SearchScreen(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { vm.search() })
         )
-
-        Spacer(Modifier.height(12.dp))
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(Sources.all.size) { i ->
-                val src = Sources.all[i]
-                FilterChip(
-                    selected = src.id == source,
-                    onClick = { vm.changeSource(src.id) },
-                    label = { Text(src.label) }
-                )
-            }
-        }
 
         Spacer(Modifier.height(8.dp))
         when {
@@ -147,9 +184,9 @@ fun SearchScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 item {
-                    // v1.4.13 #63：一键存歌单 / 一键下载全部
+                    // v1.4.17：结果数标题行 + 更多按钮（存为歌单/下载全部收进菜单）
                     BatchActionBar(
-                        songCount = results.size,
+                        title = "搜索结果（${results.size} 首）",
                         onSaveToPlaylist = { showSavePlaylist = true },
                         onDownloadAll = { showBatchDownload = true }
                     )

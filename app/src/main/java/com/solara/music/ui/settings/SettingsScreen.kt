@@ -121,52 +121,62 @@ fun SettingsScreen() {
                 }
             }
             Spacer(Modifier.height(12.dp))
-            // v1.4.13 #64：主题色选择（六色板，动态取色开启时隐藏——会被覆盖）
-            if (!settings.dynamicColor) {
+            // v1.4.15：主题色选择始终显示（原动态取色开启时隐藏，用户找不到）
+            // v1.4.13 #64：六色板
+            Text(
+                text = "主题色",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (settings.dynamicColor) {
                 Text(
-                    text = "主题色",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface
+                    text = "当前已开启动态取色，主题色被系统壁纸色覆盖，关闭动态取色后生效",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp)
                 )
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    AccentPalettes.all.forEach { p ->
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(p.c30)
-                                    .border(
-                                        width = if (settings.accentColor == p.key) 3.dp else 1.dp,
-                                        color = if (settings.accentColor == p.key)
-                                            MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.outlineVariant,
-                                        shape = CircleShape
-                                    )
-                                    .clickable {
-                                        Store.updateSettings { it.copy(accentColor = p.key) }
-                                    }
-                            )
-                            Text(
-                                text = p.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (settings.accentColor == p.key)
-                                    MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp)
-                            )
-                        }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                AccentPalettes.all.forEach { p ->
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (settings.dynamicColor) p.c30.copy(alpha = 0.35f)
+                                    else p.c30
+                                )
+                                .border(
+                                    width = if (settings.accentColor == p.key) 3.dp else 1.dp,
+                                    color = if (settings.accentColor == p.key)
+                                        MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outlineVariant,
+                                    shape = CircleShape
+                                )
+                                .clickable {
+                                    Store.updateSettings { it.copy(accentColor = p.key) }
+                                }
+                        )
+                        Text(
+                            text = p.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (settings.accentColor == p.key)
+                                MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
                     }
                 }
-                Spacer(Modifier.height(8.dp))
             }
+            Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "动态取色（Material You）",
@@ -262,7 +272,7 @@ fun SettingsScreen() {
 
         // 底部版本信息
         Text(
-            text = "版本：D music v1.4.14",
+            text = "版本：D music v1.4.17",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier

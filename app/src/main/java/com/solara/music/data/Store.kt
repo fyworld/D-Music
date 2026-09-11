@@ -30,8 +30,6 @@ data class AppSettings(
     val apiBaseUrl: String = MusicApi.DEFAULT_BASE_URL,
     /** 探索雷达偏好的音乐风格，空则使用全部风格。 */
     val radarGenres: List<String> = emptyList(),
-    /** 歌词偏移（秒，v1.4.13 #62）：正值=歌词延后显示，负值=提前。 */
-    val lyricOffset: Float = 0f,
     /** 主题色（v1.4.13 #64）：mint/blue/purple/pink/orange/sky。 */
     val accentColor: String = "mint"
 )
@@ -65,6 +63,10 @@ object Store {
     private const val KEY_LOCAL_COVERS = "local_covers"
     // 歌词磁盘缓存（v1.4.9：key=source:id → LRC 文本，离线可读）
     private const val KEY_LYRIC_CACHE = "lyric_cache"
+    // 按歌歌词偏移（v1.4.15：key=source:id → 偏移秒数，每首歌独立校准）
+    private const val KEY_LYRIC_OFFSETS = "lyric_offsets"
+    // 逐句打点时间戳（v1.4.16：key=source:id → [行索引,毫秒,...] 扁平数组，手动标记真实开唱时刻）
+    private const val KEY_LYRIC_TIMESTAMPS = "lyric_timestamps"
     // 扫描文件夹记忆（v1.4.3：null=默认 Music/D_Music）
     private const val KEY_SCAN_FOLDER = "scan_folder"
 
@@ -623,6 +625,67 @@ object Store {
             org.json.JSONObject(prefs.getString(KEY_LYRIC_CACHE, null) ?: "{}")
         }.getOrDefault(org.json.JSONObject())
 
+    // ---------- 按歌歌词偏移（v1.4.15：每首歌独立校准） ----------
+
+    /** 读取歌曲的歌词偏移秒数（正值=歌词延后，负值=提前），未校准返回 0。 */
+    fun lyricOffsetOf(song: Song): Float =
+        readLyricOffsets().optDouble("${song.source}:${song.id}", 0.0).toFloat()
+
+    /**
+     * 保存歌曲的歌词偏移秒数。
+     * 偏移为 0（重置）时删除该条目，避免 map 无限膨胀。
+     */
+    fun saveLyricOffset(song: Song, offsetSec: Float) {
+        val key = "${song.source}:${song.id}"
+        val o = readLyricOffsets()
+        if (offsetSec == 0f) o.remove(key) else o.put(key, offsetSec.toDouble())
+        prefs.edit().putString(KEY_LYRIC_OFFSETS, o.toString()).apply()
+    }
+
+    private fun readLyricOffsets(): org.json.JSONObject =
+        runCatching {
+            org.json.JSONObject(prefs.getString(KEY_LYRIC_OFFSETS, null) ?: "{}")
+        }.getOrDefault(org.json.JSONObject())
+
+    // ---------- 逐句打点时间戳（v1.4.16：手动标记每句真实开唱时刻） ----------
+
+    /**
+     * 读取歌曲的打点时间戳：行索引 → 毫秒。
+     * LRC 原始时间轴不可靠时（偏移校准救不了的），用户在打点模式下
+     * 逐句标记真实开唱时刻，显示歌词时优先使用打点时间。
+     */
+    fun lyricTimestampsOf(song: Song): Map<Int, Long> {
+        val arr = readLyricTimestamps().optJSONArray("${song.source}:${song.id}") ?: return emptyMap()
+        val map = HashMap<Int, Long>()
+        var i = 0
+        while (i + 1 < arr.length()) {
+            map[arr.optInt(i)] = arr.optLong(i + 1)
+            i += 2
+        }
+        return map
+    }
+
+    /** 保存歌曲的打点时间戳（行索引 → 毫秒）。空 map 删除条目。 */
+    fun saveLyricTimestamps(song: Song, timestamps: Map<Int, Long>) {
+        val key = "${song.source}:${song.id}"
+        val o = readLyricTimestamps()
+        if (timestamps.isEmpty()) {
+            o.remove(key)
+        } else {
+            val arr = org.json.JSONArray()
+            timestamps.toSortedMap().forEach { (idx, ms) ->
+                arr.put(idx).put(ms)
+            }
+            o.put(key, arr)
+        }
+        prefs.edit().putString(KEY_LYRIC_TIMESTAMPS, o.toString()).apply()
+    }
+
+    private fun readLyricTimestamps(): org.json.JSONObject =
+        runCatching {
+            org.json.JSONObject(prefs.getString(KEY_LYRIC_TIMESTAMPS, null) ?: "{}")
+        }.getOrDefault(org.json.JSONObject())
+
     private fun readLocalCovers(): org.json.JSONObject =
         runCatching {
             org.json.JSONObject(prefs.getString(KEY_LOCAL_COVERS, null) ?: "{}")
@@ -664,7 +727,6 @@ object Store {
             apiBaseUrl = o.optString("apiBaseUrl", MusicApi.DEFAULT_BASE_URL)
                 .ifBlank { MusicApi.DEFAULT_BASE_URL },
             radarGenres = parseRadarGenres(o),
-            lyricOffset = o.optDouble("lyricOffset", 0.0).toFloat(),
             accentColor = o.optString("accentColor", "mint").ifBlank { "mint" }
         )
     }.getOrDefault(AppSettings())
@@ -685,7 +747,6 @@ object Store {
         put("dynamicColor", s.dynamicColor)
         put("apiBaseUrl", s.apiBaseUrl)
         put("radarGenres", JSONArray(s.radarGenres))
-        put("lyricOffset", s.lyricOffset.toDouble())
         put("accentColor", s.accentColor)
     }.toString()
 
