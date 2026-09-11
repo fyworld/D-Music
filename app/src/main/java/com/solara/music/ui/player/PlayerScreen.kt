@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
@@ -32,15 +33,17 @@ import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -103,6 +106,7 @@ fun PlayerScreen(
     val lyricOffset = settings.lyricOffset
 
     var showQueue by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
     var dragPosition by remember { mutableStateOf<Float?>(null) }
     var position by remember { mutableStateOf(0L) }
     var duration by remember { mutableStateOf(0L) }
@@ -193,7 +197,7 @@ fun PlayerScreen(
                 .navigationBarsPadding()
                 .padding(horizontal = 24.dp)
         ) {
-            // ---- 顶栏（向下划收起）----
+            // ---- 顶栏（向下划收起）：歌名/歌手居中 + 更多菜单 ----
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -203,15 +207,86 @@ fun PlayerScreen(
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "收起播放器")
                 }
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = "正在播放",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.weight(1f))
-                IconButton(onClick = { showQueue = true }) {
-                    Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = "播放队列")
+                // 歌名 + 歌手（小字体居中，点击切到歌词页）
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable {
+                            scope.launch {
+                                pagerState.animateScrollToPage(
+                                    if (pagerState.currentPage % 2 == 0)
+                                        pagerState.currentPage + 1
+                                    else pagerState.currentPage - 1
+                                )
+                            }
+                        },
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = current?.displayName ?: "未在播放",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = current?.artistName ?: "—",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 1.dp)
+                    )
+                }
+                // v1.4.14：更多菜单（收藏 / 加入歌单 / 下载），替代原队列按钮
+                val isFavorite = current != null && favorites.any { it.sameAs(current) }
+                Box {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = "更多",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(if (isFavorite) "取消收藏" else "收藏") },
+                            leadingIcon = {
+                                Icon(
+                                    if (isFavorite) Icons.Filled.Favorite
+                                    else Icons.Filled.FavoriteBorder,
+                                    null
+                                )
+                            },
+                            onClick = {
+                                menuOpen = false
+                                current?.let { Store.toggleFavorite(it) }
+                            }
+                        )
+                        if (current != null) {
+                            DropdownMenuItem(
+                                text = { Text("加入歌单") },
+                                leadingIcon = {
+                                    Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null)
+                                },
+                                onClick = {
+                                    menuOpen = false
+                                    onAddToPlaylist(current)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("下载") },
+                                leadingIcon = { Icon(Icons.Filled.Download, null) },
+                                onClick = {
+                                    menuOpen = false
+                                    onDownload()
+                                }
+                            )
+                        }
+                    }
                 }
             }
 
@@ -223,7 +298,7 @@ fun PlayerScreen(
                     .fillMaxWidth()
             ) { page ->
                 if (page % 2 == 0) {
-                    // 封面页：封面 + 歌名/歌手 + 歌词预览（点歌名区域 → 歌词页）
+                    // 封面页：大封面 + 歌词预览（歌名/歌手在顶栏，点预览进歌词页）
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -231,75 +306,14 @@ fun PlayerScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Spacer(Modifier.height(12.dp))
-                        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                             CoverImage(
                                 song = current,
-                                size = 280.dp,
+                                size = 300.dp,
                                 corner = 28.dp
                             )
                         }
-                        Spacer(Modifier.height(20.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable {
-                                        scope.launch {
-                                            pagerState.animateScrollToPage(pagerState.currentPage + 1)
-                                        }
-                                    }
-                            ) {
-                                Text(
-                                    text = current?.displayName ?: "未在播放",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = current?.artistName ?: "—",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(top = 4.dp)
-                                )
-                            }
-                            val isFavorite =
-                                current != null && favorites.any { it.sameAs(current) }
-                            IconButton(onClick = { current?.let { Store.toggleFavorite(it) } }) {
-                                Icon(
-                                    imageVector = if (isFavorite) Icons.Filled.Favorite
-                                    else Icons.Filled.FavoriteBorder,
-                                    contentDescription = if (isFavorite) "取消收藏" else "收藏",
-                                    tint = if (isFavorite) MaterialTheme.colorScheme.tertiary
-                                    else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            // v1.4.7：加入歌单（收藏键边上）
-                            if (current != null) {
-                                IconButton(onClick = { onAddToPlaylist(current) }) {
-                                    Icon(
-                                        Icons.Filled.PlaylistAdd,
-                                        contentDescription = "加入歌单",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            if (current != null) {
-                                IconButton(onClick = onDownload) {
-                                    Icon(
-                                        Icons.Filled.Download,
-                                        contentDescription = "下载",
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(16.dp))
                         // 歌词预览：多行自动滚动跟随播放，点击进整页歌词
                         if (lyrics.isNotEmpty()) {
                             LazyColumn(
@@ -340,29 +354,9 @@ fun PlayerScreen(
                         }
                     }
                 } else {
-                    // 歌词页：整页歌词（自动滚动跟随）
+                    // 歌词页：整页歌词（歌名/歌手在顶栏）
                     Column(modifier = Modifier.fillMaxSize()) {
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            text = current?.displayName ?: "未在播放",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            text = current?.artistName ?: "—",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 2.dp, bottom = 4.dp)
-                        )
+                        Spacer(Modifier.height(8.dp))
                         // v1.4.13 #62：歌词同步校准——歌词快了点"延后"、慢了点"提前"
                         Row(
                             modifier = Modifier

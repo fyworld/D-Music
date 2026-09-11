@@ -262,7 +262,7 @@ fun SettingsScreen() {
 
         // 底部版本信息
         Text(
-            text = "版本：D music v1.4.13",
+            text = "版本：D music v1.4.14",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
