@@ -101,6 +101,12 @@ fun AboutScreen(onBack: () -> Unit) {
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onBackground
             )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "v1.4.12",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         Spacer(Modifier.height(24.dp))
@@ -158,15 +164,17 @@ fun AboutScreen(onBack: () -> Unit) {
 
             HorizontalDivider()
 
-            // 尾部免责声明
+            // 尾部免责声明（逐条列出，与 README 保持一致）
             Text(
-                text = "本项目基于开源项目 Solara 重构，继承 CC BY-NC-SA 4.0 协议。" +
-                    "本软件不提供、不存储任何音乐文件，音频内容来自第三方聚合 API，" +
-                    "版权归原权利人所有。仅供个人学习交流使用，禁止任何商业用途，" +
-                    "用户使用产生的法律责任自行承担。",
-                style = MaterialTheme.typography.bodySmall,
+                text = "免责声明",
+                style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            DisclaimerItem("本软件不提供、不存储、不分发任何音乐文件，音频内容来自第三方免费聚合 API。")
+            DisclaimerItem("音乐版权归原权利人所有，本软件仅供个人学习交流使用，禁止任何商业用途。")
+            DisclaimerItem("本软件基于开源项目 Solara 重构，继承 CC BY-NC-SA 4.0 协议。")
+            DisclaimerItem("本软件按\u201c原样\u201d提供，不提供任何明示或暗示的保证，使用产生的一切法律责任由用户自行承担。")
+            DisclaimerItem("版权投诉请通过 GitHub Issues 提交。")
         }
 
         Spacer(Modifier.height(24.dp))
@@ -203,6 +211,24 @@ private fun IssueLinkRow(onClick: () -> Unit) {
         if (annotated.getStringAnnotations("issue_link", offset, offset).isNotEmpty()) {
             onClick()
         }
+    }
+}
+
+/** 免责声明条目：圆点 + 文字。 */
+@Composable
+private fun DisclaimerItem(text: String) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "· ",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
