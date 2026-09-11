@@ -28,6 +28,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
@@ -48,6 +50,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -95,6 +98,9 @@ fun PlayerScreen(
     val favorites by Store.favorites.collectAsState()
     val lyrics by vm.lyrics.collectAsState()
     val lyricLoading by vm.lyricLoading.collectAsState()
+    // v1.4.13 #62：歌词偏移校准（全局设置，歌词页可调）
+    val settings by Store.settings.collectAsState()
+    val lyricOffset = settings.lyricOffset
 
     var showQueue by remember { mutableStateOf(false) }
     var dragPosition by remember { mutableStateOf<Float?>(null) }
@@ -137,7 +143,11 @@ fun PlayerScreen(
         }
     }
 
-    val currentLine = remember(lyrics, position) { LrcParser.indexOf(lyrics, position) }
+    val currentLine = remember(lyrics, position, lyricOffset) {
+        // v1.4.13 #62：应用用户校准的歌词偏移——正值延后、负值提前。
+        // 例：偏移 +0.5s 时，播放位置 10.0s 按 9.5s 查歌词行（歌词晚半秒唱到）。
+        LrcParser.indexOf(lyrics, position - (lyricOffset * 1000).toLong())
+    }
     // 整页歌词的滚动状态（当前页为奇数 = 歌词页时驱动）
     val listState = rememberLazyListState()
     LaunchedEffect(currentLine, pagerState.currentPage) {
@@ -158,6 +168,19 @@ fun PlayerScreen(
     }
 
     val current = song
+
+    /**
+     * v1.4.13 #62：调节歌词偏移（±0.5s 步进，范围 ±10s），reset=true 直接归零。
+     * 正值=歌词延后显示（歌快词慢时用"延后"），负值=提前。
+     */
+    fun adjustLyricOffset(delta: Float, reset: Boolean = false) {
+        Store.updateSettings { s ->
+            s.copy(
+                lyricOffset = if (reset) 0f
+                else (s.lyricOffset + delta).coerceIn(-10f, 10f)
+            )
+        }
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -340,6 +363,45 @@ fun PlayerScreen(
                                 .fillMaxWidth()
                                 .padding(top = 2.dp, bottom = 4.dp)
                         )
+                        // v1.4.13 #62：歌词同步校准——歌词快了点"延后"、慢了点"提前"
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 4.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = { adjustLyricOffset(-0.5f) }) {
+                                Icon(
+                                    Icons.Filled.FastRewind,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(Modifier.size(2.dp))
+                                Text("提前", style = MaterialTheme.typography.labelSmall)
+                            }
+                            Text(
+                                text = if (lyricOffset == 0f) "同步校准"
+                                else "偏移 ${if (lyricOffset > 0) "+" else ""}${"%.1f".format(lyricOffset)}s",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                            TextButton(onClick = { adjustLyricOffset(0.5f) }) {
+                                Text("延后", style = MaterialTheme.typography.labelSmall)
+                                Spacer(Modifier.size(2.dp))
+                                Icon(
+                                    Icons.Filled.FastForward,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                            if (lyricOffset != 0f) {
+                                TextButton(onClick = { adjustLyricOffset(0f, reset = true) }) {
+                                    Text("重置", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
                         Box(
                             modifier = Modifier
                                 .weight(1f)

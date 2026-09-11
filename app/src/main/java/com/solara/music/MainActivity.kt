@@ -75,10 +75,22 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
             }
-            SolaraTheme(darkTheme = darkTheme, dynamicColor = settings.dynamicColor) {
+            SolaraTheme(
+                darkTheme = darkTheme,
+                dynamicColor = settings.dynamicColor,
+                accentColor = settings.accentColor
+            ) {
                 SolaraApp()
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // v1.4.13 #61：从后台切回时确保播放服务存活——服务可能已被系统
+        // 回收（进程仍在），此时 playerRef 为 null，点播放会无反应。
+        // startService 幂等：服务活着时无副作用。
+        PlayerManager.ensureService(applicationContext)
     }
 
     override fun onDestroy() {

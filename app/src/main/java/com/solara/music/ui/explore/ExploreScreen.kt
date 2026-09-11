@@ -33,7 +33,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,10 +44,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.solara.music.data.Store
 import com.solara.music.player.PlayerManager
+import com.solara.music.ui.components.BatchActionBar
+import com.solara.music.ui.components.BatchDownloadDialog
 import com.solara.music.ui.components.EmptyState
+import com.solara.music.ui.components.SaveAsPlaylistDialog
 import com.solara.music.ui.components.SongRow
 import com.solara.music.ui.components.dragReorder
 import com.solara.music.ui.components.rememberDragReorderState
+import com.solara.music.ui.components.saveSongsToNewPlaylist
 
 /**
  * 探索雷达：一键从随机风格发现新音乐，结果追加进播放队列。
@@ -55,7 +61,8 @@ import com.solara.music.ui.components.rememberDragReorderState
 fun ExploreScreen(
     vm: ExploreViewModel,
     onAddToPlaylist: (com.solara.music.data.Song) -> Unit = {},
-    onDownload: (com.solara.music.data.Song) -> Unit = {}
+    onDownload: (com.solara.music.data.Song) -> Unit = {},
+    onShowMessage: (String) -> Unit = {}
 ) {
     val genre by vm.genre.collectAsState()
     val results by vm.results.collectAsState()
@@ -63,6 +70,11 @@ fun ExploreScreen(
     val error by vm.error.collectAsState()
     val toast by vm.toast.collectAsState()
     val favorites by Store.favorites.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // v1.4.13 #63：批量存歌单 / 批量下载
+    var showSavePlaylist by remember { mutableStateOf(false) }
+    var showBatchDownload by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
@@ -152,6 +164,14 @@ fun ExploreScreen(
                             modifier = Modifier.padding(bottom = 4.dp)
                         )
                     }
+                    item {
+                        // v1.4.13 #63：一键存歌单 / 一键下载全部
+                        BatchActionBar(
+                            songCount = results.size,
+                            onSaveToPlaylist = { showSavePlaylist = true },
+                            onDownloadAll = { showBatchDownload = true }
+                        )
+                    }
                     items(results.size) { i ->
                         val song = results[i]
                         SongRow(
@@ -169,6 +189,33 @@ fun ExploreScreen(
                 }
             }
         }
+    }
+
+    // v1.4.13 #63：批量操作弹窗
+    if (showSavePlaylist) {
+        SaveAsPlaylistDialog(
+            songCount = results.size,
+            defaultName = (genre ?: "探索发现").ifBlank { "探索发现" },
+            onDismiss = { showSavePlaylist = false },
+            onConfirm = { name ->
+                val saved = saveSongsToNewPlaylist(results, name)
+                if (saved.isNotBlank()) onShowMessage("已存入歌单「$saved」")
+                showSavePlaylist = false
+            }
+        )
+    }
+    if (showBatchDownload) {
+        BatchDownloadDialog(
+            songCount = results.size,
+            onDismiss = { showBatchDownload = false },
+            onConfirm = { quality ->
+                results.forEach {
+                    com.solara.music.data.DownloadManager.enqueue(context, it, quality)
+                }
+                onShowMessage("已开始下载 ${results.size} 首")
+                showBatchDownload = false
+            }
+        )
     }
 }
 

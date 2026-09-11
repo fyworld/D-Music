@@ -16,6 +16,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -54,6 +56,12 @@ object DownloadManager {
 
     private val jobs = ConcurrentHashMap<String, Job>()
 
+    /**
+     * v1.4.13 #63：并发下载信号量——批量下载 30 首时防止同时打满网络
+     * （单曲下载同样受限，全局统一最多 3 路并行）。
+     */
+    private val downloadSemaphore = Semaphore(permits = 3)
+
     private val client by lazy {
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
@@ -73,12 +81,14 @@ object DownloadManager {
                 updateTask { list ->
                     list.map { if (it.id == id) it.copy(status = DownloadStatus.DOWNLOADING) else it }
                 }
-                val url = MusicApi.resolveUrl(song, quality)
-                if (url.isNullOrBlank()) {
-                    fail(id, "无法解析直链（音源可能不支持该品质）")
-                    return@launch
+                downloadSemaphore.withPermit {
+                    val url = MusicApi.resolveUrl(song, quality)
+                    if (url.isNullOrBlank()) {
+                        fail(id, "无法解析直链（音源可能不支持该品质）")
+                        return@withPermit
+                    }
+                    downloadTo(context.applicationContext, id, url, task)
                 }
-                downloadTo(context.applicationContext, id, url, task)
             } catch (e: Exception) {
                 fail(id, e.message ?: "下载失败")
             } finally {

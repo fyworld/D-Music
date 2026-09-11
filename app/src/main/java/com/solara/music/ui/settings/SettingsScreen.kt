@@ -3,7 +3,10 @@
 package com.solara.music.ui.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -12,11 +15,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -48,6 +53,7 @@ import com.solara.music.data.MusicApi
 import com.solara.music.data.Qualities
 import com.solara.music.data.Store
 import com.solara.music.data.ThemeMode
+import com.solara.music.ui.theme.AccentPalettes
 
 @Composable
 fun SettingsScreen() {
@@ -114,7 +120,53 @@ fun SettingsScreen() {
                     )
                 }
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(12.dp))
+            // v1.4.13 #64：主题色选择（六色板，动态取色开启时隐藏——会被覆盖）
+            if (!settings.dynamicColor) {
+                Text(
+                    text = "主题色",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    AccentPalettes.all.forEach { p ->
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(p.c30)
+                                    .border(
+                                        width = if (settings.accentColor == p.key) 3.dp else 1.dp,
+                                        color = if (settings.accentColor == p.key)
+                                            MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.outlineVariant,
+                                        shape = CircleShape
+                                    )
+                                    .clickable {
+                                        Store.updateSettings { it.copy(accentColor = p.key) }
+                                    }
+                            )
+                            Text(
+                                text = p.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (settings.accentColor == p.key)
+                                    MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "动态取色（Material You）",
@@ -210,7 +262,7 @@ fun SettingsScreen() {
 
         // 底部版本信息
         Text(
-            text = "版本：D music v1.4.12",
+            text = "版本：D music v1.4.13",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier

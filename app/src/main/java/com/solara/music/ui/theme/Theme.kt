@@ -11,11 +11,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
-private val LightColors = lightColorScheme(
-    primary = Teal30,
-    onPrimary = Teal95,
-    primaryContainer = Teal90,
-    onPrimaryContainer = Teal10,
+/**
+ * 按主题色板构建明/暗 ColorScheme（v1.4.13 #64）。
+ * 主色取自所选色板，辅助色（secondary=蓝、tertiary=珊瑚橙）保持原设计。
+ */
+private fun lightScheme(a: AccentPalette) = lightColorScheme(
+    primary = a.c30,
+    onPrimary = Color.White,
+    primaryContainer = a.c90,
+    onPrimaryContainer = a.c10,
     secondary = Blue30,
     onSecondary = Blue95,
     secondaryContainer = Blue90,
@@ -26,19 +30,19 @@ private val LightColors = lightColorScheme(
     onTertiaryContainer = Color(0xFF4A1B0C),
     background = NeutralBgLight,
     onBackground = Color(0xFF17201C),
-    surface = androidx.compose.ui.graphics.Color.White,
+    surface = Color.White,
     onSurface = Color(0xFF17201C),
-    surfaceVariant = Teal95,
+    surfaceVariant = a.c95,
     onSurfaceVariant = Color(0xFF404945),
     outline = OutlineLight,
     outlineVariant = Color(0xFFD3D1C7)
 )
 
-private val DarkColors = darkColorScheme(
-    primary = Teal80,
-    onPrimary = Teal10,
-    primaryContainer = Teal30,
-    onPrimaryContainer = Teal90,
+private fun darkScheme(a: AccentPalette) = darkColorScheme(
+    primary = a.c80,
+    onPrimary = a.c10,
+    primaryContainer = a.c30,
+    onPrimaryContainer = a.c90,
     secondary = Blue80,
     onSecondary = Color(0xFF042C53),
     secondaryContainer = Color(0xFF0C447C),
@@ -57,10 +61,15 @@ private val DarkColors = darkColorScheme(
     outlineVariant = Color(0xFF2C3733)
 )
 
+/** 兼容旧引用（薄荷绿默认）。 */
+private val LightColors = lightScheme(AccentPalettes.mint)
+private val DarkColors = darkScheme(AccentPalettes.mint)
+
 @Composable
 fun SolaraTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = false,
+    accentColor: String = "mint",
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -69,8 +78,8 @@ fun SolaraTheme(
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
 
-        darkTheme -> DarkColors
-        else -> LightColors
+        darkTheme -> darkScheme(AccentPalettes.of(accentColor))
+        else -> lightScheme(AccentPalettes.of(accentColor))
     }
     MaterialTheme(
         colorScheme = colorScheme,

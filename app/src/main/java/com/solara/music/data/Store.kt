@@ -29,7 +29,11 @@ data class AppSettings(
     val dynamicColor: Boolean = false,
     val apiBaseUrl: String = MusicApi.DEFAULT_BASE_URL,
     /** 探索雷达偏好的音乐风格，空则使用全部风格。 */
-    val radarGenres: List<String> = emptyList()
+    val radarGenres: List<String> = emptyList(),
+    /** 歌词偏移（秒，v1.4.13 #62）：正值=歌词延后显示，负值=提前。 */
+    val lyricOffset: Float = 0f,
+    /** 主题色（v1.4.13 #64）：mint/blue/purple/pink/orange/sky。 */
+    val accentColor: String = "mint"
 )
 
 /**
@@ -659,7 +663,9 @@ object Store {
             dynamicColor = o.optBoolean("dynamicColor", false),
             apiBaseUrl = o.optString("apiBaseUrl", MusicApi.DEFAULT_BASE_URL)
                 .ifBlank { MusicApi.DEFAULT_BASE_URL },
-            radarGenres = parseRadarGenres(o)
+            radarGenres = parseRadarGenres(o),
+            lyricOffset = o.optDouble("lyricOffset", 0.0).toFloat(),
+            accentColor = o.optString("accentColor", "mint").ifBlank { "mint" }
         )
     }.getOrDefault(AppSettings())
 
@@ -679,6 +685,8 @@ object Store {
         put("dynamicColor", s.dynamicColor)
         put("apiBaseUrl", s.apiBaseUrl)
         put("radarGenres", JSONArray(s.radarGenres))
+        put("lyricOffset", s.lyricOffset.toDouble())
+        put("accentColor", s.accentColor)
     }.toString()
 
     private fun songToJson(s: Song): JSONObject = JSONObject().apply {

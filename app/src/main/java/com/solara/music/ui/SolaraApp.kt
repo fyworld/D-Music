@@ -44,13 +44,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -65,6 +70,7 @@ import com.solara.music.data.DownloadStatus
 import com.solara.music.data.Song
 import com.solara.music.data.Store
 import com.solara.music.player.PlayerManager
+import kotlinx.coroutines.launch
 import com.solara.music.ui.about.AboutScreen
 import com.solara.music.ui.components.AddToPlaylistSheet
 import com.solara.music.ui.components.CoverImage
@@ -103,11 +109,24 @@ fun SolaraApp() {
     val exploreVm: ExploreViewModel = viewModel()
     val context = LocalContext.current
 
+    // v1.4.13 #65：全局播放失败提示（解析失败/网络错误）
+    val snackbarHostState = remember { SnackbarHostState() }
+    val appScope = rememberCoroutineScope()
+    val showMessage: (String) -> Unit = { msg ->
+        appScope.launch { snackbarHostState.showSnackbar(msg, duration = SnackbarDuration.Short) }
+    }
+    LaunchedEffect(Unit) {
+        PlayerManager.playError.collect { msg ->
+            snackbarHostState.showSnackbar(msg, duration = SnackbarDuration.Short)
+        }
+    }
+
     val downloadTasks by DownloadManager.tasks.collectAsState()
     val activeDownloads = downloadTasks.count { it.status == DownloadStatus.DOWNLOADING }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             Column {
                 AnimatedVisibility(
@@ -245,12 +264,14 @@ fun SolaraApp() {
                     0 -> ExploreScreen(
                         vm = exploreVm,
                         onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it }
+                        onDownload = { downloadTarget = it },
+                        onShowMessage = showMessage
                     )
                     1 -> SearchScreen(
                         vm = searchVm,
                         onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it }
+                        onDownload = { downloadTarget = it },
+                        onShowMessage = showMessage
                     )
                     2 -> LibraryScreen(
                         onAddToPlaylist = { playlistTarget = it },
@@ -263,7 +284,8 @@ fun SolaraApp() {
                     else -> ExploreScreen(
                         vm = exploreVm,
                         onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it }
+                        onDownload = { downloadTarget = it },
+                        onShowMessage = showMessage
                     )
                 }
             }

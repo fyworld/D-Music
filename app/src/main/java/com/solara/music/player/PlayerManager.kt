@@ -19,11 +19,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -49,6 +51,9 @@ object PlayerManager {
     @Volatile private var playerRef: ExoPlayer? = null
     @Volatile private var appContext: Context? = null
 
+    /** v1.4.13 #61：记住 application context，服务被杀后点播放时自愈重启服务。 */
+    @Volatile private var bootContext: Context? = null
+
     /** 安全访问：Service 尚未创建 player 时返回 null，UI 侧应使用此属性避免崩溃。 */
     val playerOrNull: ExoPlayer? get() = playerRef
 
@@ -59,6 +64,16 @@ object PlayerManager {
     val currentIndex = MutableStateFlow(-1)
     val isPlaying = MutableStateFlow(false)
     val playMode = MutableStateFlow(PlayMode.SEQUENCE)
+
+    /**
+     * 播放失败事件（v1.4.13 #65）：解析失败/网络错误时发射，UI 层收集展示提示。
+     * SharedFlow 挂了就丢——提示类事件不需要补播。
+     */
+    val playError = MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 4,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
 
     val currentSong: StateFlow<Song?> = combine(queue, currentIndex) { songs, i ->
         songs.getOrNull(i)
@@ -81,7 +96,19 @@ object PlayerManager {
      */
     fun ensureService(context: Context) {
         val appCtx = context.applicationContext
+        bootContext = appCtx
         appCtx.startService(Intent(appCtx, PlaybackService::class.java))
+    }
+
+    /**
+     * v1.4.13 #61：服务被系统杀掉但进程还活着时，用户从最近任务返回 App
+     * 只走 onStart/onResume（不重走 onCreate → ensureService），playerRef
+     * 已为 null，点播放将永远无反应。此处在点播放时尝试重启服务；
+     * 重启后 attachPlayer 会消费 pendingPlayOnAttach 自动续播。
+     */
+    private fun ensureServiceAlive() {
+        val ctx = bootContext ?: return
+        runCatching { ctx.startService(Intent(ctx, PlaybackService::class.java)) }
     }
 
     /** 由 [PlaybackService.onCreate] 调用：注入 ExoPlayer 与应用上下文并绑定事件。 */
@@ -106,10 +133,17 @@ object PlayerManager {
                 // 播放器级错误（解码失败/网络中断）：按解析失败处理，自动跳下一首
                 consecutiveFailures++
                 if (consecutiveFailures < maxConsecutiveFailures) {
+                    playError.tryEmit("「${songs().getOrNull(currentIndex.value)?.displayName ?: "当前歌曲"}」播放失败，换下一首")
                     playNext(auto = true)
                 } else {
                     consecutiveFailures = 0
                     isPlaying.value = false
+                    // v1.4.13 #61：停止自动跳歌后必须显式 stop 清出 IDLE 态——
+                    // ExoPlayer 出错后停留在 STATE_IDLE，后续 play() 是空操作，
+                    // 表现为"点播放无反应"（假死）。stop() 后再点播放会走
+                    // togglePlayPause 的 mediaItemCount==0 自愈分支重新装载。
+                    playError.tryEmit("连续播放失败，已停止自动切换")
+                    runCatching { p.stop(); p.clearMediaItems() }
                 }
             }
         })
@@ -156,11 +190,18 @@ object PlayerManager {
         if (index !in songs.indices) return
         val p = playerRef
         if (p == null) {
-            // 服务未就绪：记住意图，attachPlayer 恢复队列后自动播放
+            // 服务未就绪：记住意图，attachPlayer 恢复队列后自动播放；
+            // v1.4.13 #61：服务被杀（进程存活）时主动重启
             pendingPlayOnAttach = true
+            ensureServiceAlive()
             currentIndex.value = index
             Store.saveQueue(songs, index) // 落盘 + 备份，防进程被杀丢队列
             return
+        }
+        // v1.4.13 #61：出错后残留的 IDLE 态在这里一并清理——
+        // resolveAndPlay 走 setMediaItem+prepare 会自动重置状态
+        if (p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED) {
+            consecutiveFailures = 0
         }
         currentIndex.value = index
         Store.saveQueue(songs, index)
@@ -175,13 +216,24 @@ object PlayerManager {
             return
         }
         if (p == null) {
-            // 服务尚未就绪（如 ROM 延迟启动）：标记待播，attachPlayer 后自动续播
+            // 服务尚未就绪（如 ROM 延迟启动）：标记待播，attachPlayer 后自动续播；
+            // v1.4.13 #61：若服务已被系统杀掉（进程存活），主动重启它
             pendingPlayOnAttach = true
+            ensureServiceAlive()
             return
         }
         if (p.mediaItemCount == 0) {
             // 重启后队列已恢复但播放器未装载曲目（如上次退出时未在播）：
             // 直接 play() 是空操作，必须重新解析装载当前曲目
+            playAt(currentIndex.value.coerceAtLeast(0))
+            return
+        }
+        if (p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED) {
+            // v1.4.13 #61（假死修复）：播放器出错后进入 STATE_IDLE、队列自然播完
+            // 停在 STATE_ENDED——这两种状态下 play() 都是静默空操作，这就是
+            // "长期不播放后再点播放无反应、要杀掉 App 重启才恢复"的根因。
+            // 自愈方法：重新装载当前曲目（重新解析直链 + prepare）。
+            consecutiveFailures = 0
             playAt(currentIndex.value.coerceAtLeast(0))
             return
         }
@@ -195,6 +247,9 @@ object PlayerManager {
 
     /** 手动下一首（循环）。 */
     fun next() = step(1)
+
+    /** 供错误提示读取当前曲目名（Listener 内部使用）。 */
+    private fun songs(): List<Song> = queue.value
 
     /**
      * 手动上一首（循环）。
@@ -356,6 +411,8 @@ object PlayerManager {
             }
             if (url.isNullOrBlank()) {
                 consecutiveFailures++
+                // v1.4.13 #65：解析失败给用户明确提示（网络差/音源不可用）
+                playError.tryEmit("「${song.displayName}」暂时无法播放（网络差或音源解析失败）")
                 // 连续失败达上限：停止滚动，停在当前曲目等待用户手动操作
                 if (consecutiveFailures >= maxConsecutiveFailures) {
                     consecutiveFailures = 0
