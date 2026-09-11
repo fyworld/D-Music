@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
@@ -123,6 +124,20 @@ fun SolaraApp() {
 
     val downloadTasks by DownloadManager.tasks.collectAsState()
     val activeDownloads = downloadTasks.count { it.status == DownloadStatus.DOWNLOADING }
+
+    // v1.4.18：系统返回键分层拦截——
+    // 弹窗 > 播放页 > "我的"子页面（设置/下载/本地歌曲/关于）> 主界面（正常退出）。
+    // 在子页面按返回不退出 App，先回主界面；主界面再按返回才退出。
+    val canExitDirectly = mePage == null && !showPlayer &&
+        playlistTarget == null && downloadTarget == null
+    BackHandler(enabled = !canExitDirectly) {
+        when {
+            playlistTarget != null -> playlistTarget = null
+            downloadTarget != null -> downloadTarget = null
+            showPlayer -> showPlayer = false
+            mePage != null -> mePage = null
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,

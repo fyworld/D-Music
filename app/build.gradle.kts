@@ -11,8 +11,24 @@ android {
         applicationId = "com.solara.music"
         minSdk = 24
         targetSdk = 34
-        versionCode = 31
-        versionName = "1.4.17"
+        versionCode = 32
+        versionName = "1.4.18"
+    }
+
+    // v1.4.18：双版本——full（标准版，含打赏）/ lite（纯净版，无打赏）。
+    // 同一份代码，BuildConfig.DONATE_ENABLED 控制打赏入口显隐。
+    flavorDimensions += "version"
+    productFlavors {
+        create("full") {
+            dimension = "version"
+            buildConfigField("boolean", "DONATE_ENABLED", "true")
+        }
+        create("lite") {
+            dimension = "version"
+            applicationIdSuffix = ".lite"
+            versionNameSuffix = "-lite"
+            buildConfigField("boolean", "DONATE_ENABLED", "false")
+        }
     }
 
     buildTypes {
@@ -30,6 +46,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"

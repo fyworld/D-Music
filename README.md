@@ -4,7 +4,12 @@
 
 **免费聆听无损音质，免费下载无损音乐。**
 
-当前版本：**v1.4.17**
+当前版本：**v1.4.18**（提供两个版本，任选其一安装，可共存）
+
+| 版本 | 包名 | 说明 |
+|------|------|------|
+| 标准版 full | `com.solara.music` | 含全部功能，包括「关于」页的自愿打赏入口 |
+| 纯净版 lite | `com.solara.music.lite` | 功能完全相同，仅去掉打赏入口 |
 
 ## 功能特性
 
@@ -54,9 +59,11 @@
 ```bash
 # Android Studio：打开项目目录，Sync 后直接 Run
 
-# 或命令行
-gradle assembleDebug
-# 产物：app/build/outputs/apk/debug/app-debug.apk
+# 或命令行（full 标准版 / lite 纯净版）
+gradle assembleFullDebug
+gradle assembleLiteDebug
+# 产物：app/build/outputs/apk/full/debug/app-full-debug.apk
+#      app/build/outputs/apk/lite/debug/app-lite-debug.apk
 ```
 
 ## 项目结构
