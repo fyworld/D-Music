@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知圆角卡片背景（深色主题：深灰卡片） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#272A2F" />
+    <corners android:radius="20dp" />
+</shape>

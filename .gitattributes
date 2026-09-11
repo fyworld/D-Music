@@ -1,0 +1,16 @@
+# 统一行尾处理
+* text=auto
+
+# Unix 脚本必须保持 LF（否则 Linux/macOS 无法执行）
+gradlew text eol=lf
+
+# Windows 批处理保持 CRLF
+*.bat text eol=crlf
+
+# 二进制文件不做行尾转换
+*.jar binary
+*.png binary
+*.jpg binary
+*.webp binary
+*.apk binary
+*.keystore binary

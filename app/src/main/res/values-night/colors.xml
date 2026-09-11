@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 自定义媒体通知文字颜色（深色主题） -->
+    <color name="notif_text_primary">#F5F5F7</color>
+    <color name="notif_text_secondary">#A8A8B0</color>
+</resources>

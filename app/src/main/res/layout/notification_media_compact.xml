@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  媒体通知收起态 / 锁屏态布局（≤64dp）：
+  封面(48dp) + 歌名/歌手 + 四键（收藏/上一首/播放暂停/下一首）。
+  v1.4.1：锁屏与通知栏收起时系统强制使用本布局（customContentView 限高 64dp，
+  无法显示真正展开态），因此把收起态升级为"准展开"样式——大封面 + 四键齐全，
+  锁屏观感与展开态接近。展开态见 notification_media.xml（含右上角 X）。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="60dp"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="@drawable/notif_card_bg"
+    android:paddingStart="6dp"
+    android:paddingEnd="6dp">
+
+    <ImageView
+        android:id="@+id/notif_cover"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_marginStart="8dp"
+        android:scaleType="centerCrop"
+        android:importantForAccessibility="no"
+        android:contentDescription="专辑封面" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="4dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/notif_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="D Music"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:textColor="@color/notif_text_primary" />
+
+        <TextView
+            android:id="@+id/notif_artist"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:text=""
+            android:textSize="12sp"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:textColor="@color/notif_text_secondary" />
+    </LinearLayout>
+
+    <ImageView
+        android:id="@+id/notif_btn_favorite"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:padding="8dp"
+        android:src="@drawable/ic_stat_heart"
+        android:background="@drawable/notif_btn_ripple"
+        android:importantForAccessibility="no"
+        android:tint="@color/notif_text_primary" />
+
+    <ImageView
+        android:id="@+id/notif_btn_prev"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:padding="8dp"
+        android:src="@drawable/ic_stat_prev"
+        android:background="@drawable/notif_btn_ripple"
+        android:importantForAccessibility="no"
+        android:tint="@color/notif_text_primary" />
+
+    <ImageView
+        android:id="@+id/notif_btn_play_pause"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:padding="7dp"
+        android:src="@drawable/ic_stat_play"
+        android:background="@drawable/notif_btn_ripple"
+        android:importantForAccessibility="no"
+        android:tint="@color/notif_text_primary" />
+
+    <ImageView
+        android:id="@+id/notif_btn_next"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:padding="8dp"
+        android:src="@drawable/ic_stat_next"
+        android:background="@drawable/notif_btn_ripple"
+        android:importantForAccessibility="no"
+        android:tint="@color/notif_text_primary" />
+</LinearLayout>

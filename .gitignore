@@ -1,0 +1,20 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# 构建产物
+app/build/
+
+# WorkBuddy 工作区数据（不发布）
+.workbuddy/
+
+# 开发过程记录文件（不发布）
+bug.txt
+关于D music.txt

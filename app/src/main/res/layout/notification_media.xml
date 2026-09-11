@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  媒体播放通知自定义布局·展开态（紧凑横向样式）：
+  - 左侧大封面（几乎占满卡片高度）
+  - 右侧上：歌名/歌手 + 右上角 X（退出 App）
+  - 右侧下：收藏 / 上一首 / 播放暂停 / 下一首（固定尺寸按钮，居中排列）
+  布局原则：图标 drawable 均为纯白，浅色卡片上必须 tint 上色（v1.3.6f 教训：
+  缺 tint 时白底白图标"隐形"，症状酷似按钮丢失/只渲染第一个按钮）。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:background="@drawable/notif_card_bg"
+    android:padding="6dp">
+
+    <!-- 左侧大封面 -->
+    <ImageView
+        android:id="@+id/notif_cover"
+        android:layout_width="108dp"
+        android:layout_height="108dp"
+        android:layout_marginStart="4dp"
+        android:scaleType="centerCrop"
+        android:importantForAccessibility="no"
+        android:contentDescription="专辑封面" />
+
+    <!-- 右侧：固定 108dp 高（与封面等高），上=标题/歌手+X，下=四键 -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="108dp"
+        android:layout_weight="1"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="2dp"
+        android:orientation="vertical">
+
+        <!-- 标题行：歌名/歌手 + X -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/notif_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="D Music"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:maxLines="1"
+                    android:ellipsize="end"
+                    android:textColor="@color/notif_text_primary" />
+
+                <TextView
+                    android:id="@+id/notif_artist"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text=""
+                    android:textSize="12sp"
+                    android:maxLines="1"
+                    android:ellipsize="end"
+                    android:textColor="@color/notif_text_secondary" />
+            </LinearLayout>
+
+            <ImageView
+                android:id="@+id/notif_close"
+                android:layout_width="30dp"
+                android:layout_height="30dp"
+                android:padding="6dp"
+                android:layout_marginStart="4dp"
+                android:src="@drawable/ic_stat_close"
+                android:background="@drawable/notif_btn_ripple"
+                android:importantForAccessibility="no"
+                android:tint="@color/notif_text_secondary" />
+        </LinearLayout>
+
+        <!-- 弹性空隙：把按钮行推到底部（RemoteViews 不支持 Space，用空 TextView） -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:text="" />
+
+        <!-- 四键行：固定尺寸按钮 + 居中。
+             注意：图标 drawable 均为纯白（状态栏图标惯例），浅色卡片上必须
+             android:tint 上色，否则白底白图标隐形（v1.3.6e 曾误判为嵌套
+             weight 导致按钮丢失，实为缺 tint）。收藏键由代码 setColorFilter
+             上色（收藏=薄荷绿高亮 / 未收藏=主文字色），不设 XML tint。 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <ImageView
+                android:id="@+id/notif_btn_favorite"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
+                android:padding="11dp"
+                android:src="@drawable/ic_stat_heart"
+                android:background="@drawable/notif_btn_ripple"
+                android:importantForAccessibility="no" />
+
+            <ImageView
+                android:id="@+id/notif_btn_prev"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
+                android:padding="10dp"
+                android:src="@drawable/ic_stat_prev"
+                android:background="@drawable/notif_btn_ripple"
+                android:tint="@color/notif_text_primary"
+                android:importantForAccessibility="no" />
+
+            <ImageView
+                android:id="@+id/notif_btn_play_pause"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
+                android:padding="7dp"
+                android:src="@drawable/ic_stat_play"
+                android:background="@drawable/notif_btn_ripple"
+                android:tint="@color/notif_text_primary"
+                android:importantForAccessibility="no" />
+
+            <ImageView
+                android:id="@+id/notif_btn_next"
+                android:layout_width="46dp"
+                android:layout_height="46dp"
+                android:padding="10dp"
+                android:src="@drawable/ic_stat_next"
+                android:background="@drawable/notif_btn_ripple"
+                android:tint="@color/notif_text_primary"
+                android:importantForAccessibility="no" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>
