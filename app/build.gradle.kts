@@ -11,8 +11,8 @@ android {
         applicationId = "com.solara.music"
         minSdk = 24
         targetSdk = 34
-        versionCode = 34
-        versionName = "1.4.20"
+        versionCode = 36
+        versionName = "1.4.22"
     }
 
     // v1.4.18：双版本——full（标准版，含打赏）/ lite（纯净版，无打赏）。

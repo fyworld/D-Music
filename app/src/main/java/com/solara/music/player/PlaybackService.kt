@@ -28,6 +28,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.solara.music.MainActivity
 import com.solara.music.R
+import com.solara.music.data.LocalCoverExtractor
 import com.solara.music.data.Store
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -146,6 +147,9 @@ class PlaybackService : MediaSessionService() {
             buildServiceNotification(),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
         )
+
+        // v1.4.22：冷启动异步加载当前歌曲封面，完成后刷新占位通知
+        loadPlaceholderCover()
     }
 
     private fun createChannel() {
@@ -165,8 +169,9 @@ class PlaybackService : MediaSessionService() {
      * 完全退出后再进入，通知栏不再先出现"系统默认样式"、点播放才变样。
      * 时序保证：onCreate 中 attachPlayer（内含队列恢复）先于本方法执行，
      * currentSong 已就绪。无歌（首次安装）时退回简单文本样式。
+     * v1.4.22：封面异步加载（见 [loadPlaceholderCover]），加载完成后刷新。
      */
-    private fun buildServiceNotification(): Notification {
+    private fun buildServiceNotification(cover: Bitmap? = placeholderCover): Notification {
         val current = PlayerManager.currentSong.value
         if (current != null) {
             return buildMediaStyleNotification(
@@ -174,7 +179,8 @@ class PlaybackService : MediaSessionService() {
                 current.displayName,
                 current.artistName,
                 playing = false, // 占位 = 未播放，显示播放▶图标
-                isFavorite = Store.isFavorite(current)
+                isFavorite = Store.isFavorite(current),
+                cover = cover
             )
         }
         val contentIntent = PendingIntent.getActivity(
@@ -192,6 +198,44 @@ class PlaybackService : MediaSessionService() {
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
+    }
+
+    /** 占位通知封面缓存（v1.4.22）：加载成功后复用，避免重复网络请求。 */
+    @Volatile private var placeholderCover: Bitmap? = null
+
+    /**
+     * v1.4.22：冷启动异步加载当前歌曲封面，完成后刷新占位通知。
+     * - 在线歌：CoverCache → MusicApi.fetchPicUrl → 下载解码
+     * - 本地歌：LocalCoverExtractor（URL 缓存/内嵌图/同名图片）
+     * - 仅当 player 仍未装载曲目时刷新（Provider 接管后占位通知已无意义）
+     */
+    private fun loadPlaceholderCover() {
+        val song = PlayerManager.currentSong.value ?: return
+        scope.launch(Dispatchers.IO) {
+            val bitmap: Bitmap? = runCatching {
+                if (song.source == "local") {
+                    LocalCoverExtractor.getCover(this@PlaybackService, song)
+                } else {
+                    val cacheKey = "${song.source}:${song.picId.ifBlank { song.id }}"
+                    val url = com.solara.music.ui.components.CoverCache.get(cacheKey)
+                        ?: com.solara.music.data.MusicApi.fetchPicUrl(song)?.also {
+                            if (it != null) com.solara.music.ui.components.CoverCache.put(cacheKey, it)
+                        }
+                    url?.let { u ->
+                        java.net.URL(u).openStream().use {
+                            android.graphics.BitmapFactory.decodeStream(it)
+                        }
+                    }
+                }
+            }.getOrNull()
+            if (bitmap != null) {
+                placeholderCover = bitmap
+                // player 仍空载（占位期间）才刷新；已装载则 Provider 接管，无需处理
+                if ((mediaSession?.player?.mediaItemCount ?: 0) == 0) {
+                    notificationManager.notify(NOTIFICATION_ID, buildServiceNotification(bitmap))
+                }
+            }
+        }
     }
 
     /**
@@ -462,14 +506,15 @@ class CustomMediaNotificationProvider(private val context: Context) :
  * v1.4.20：构建 APP 自定义媒体样式通知（占位通知复用）。
  * 与 [CustomMediaNotificationProvider] 的布局完全一致：展开态四键 + 收起态四键，
  * 按钮全部走自建 PendingIntent.getService（onStartCommand 拦截分发）。
- * 占位场景 player 空载、无封面元数据，用占位封面图。
+ * v1.4.22：cover 参数——占位场景异步加载真实封面后刷新传入；null 用占位图。
  */
 internal fun buildMediaStyleNotification(
     context: Context,
     title: String,
     artist: String,
     playing: Boolean,
-    isFavorite: Boolean
+    isFavorite: Boolean,
+    cover: Bitmap? = null
 ): Notification {
     fun servicePendingIntent(action: String, requestCode: Int) =
         PendingIntent.getService(
@@ -509,7 +554,8 @@ internal fun buildMediaStyleNotification(
             R.id.notif_btn_play_pause,
             if (playing) R.drawable.ic_stat_pause else R.drawable.ic_stat_play
         )
-        setImageViewResource(R.id.notif_cover, R.drawable.notif_cover_placeholder)
+        if (cover != null) setImageViewBitmap(R.id.notif_cover, cover)
+        else setImageViewResource(R.id.notif_cover, R.drawable.notif_cover_placeholder)
     }
 
     val expanded = RemoteViews(context.packageName, R.layout.notification_media).apply { applyMediaLayout() }

@@ -1,5 +1,8 @@
 package com.solara.music.data
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
@@ -10,6 +13,9 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
+import androidx.core.app.NotificationCompat
+import com.solara.music.MainActivity
+import com.solara.music.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -69,18 +75,128 @@ object DownloadManager {
             .build()
     }
 
+    // ---- v1.4.22：下载进度通知 ----
+
+    /** 下载通知 ID（与播放通知 100 区分）。 */
+    private const val DOWNLOAD_NOTIFICATION_ID = 200
+    private const val DOWNLOAD_CHANNEL_ID = "d_music_download"
+
+    /** 通知刷新节流（与任务进度节流同频，300ms）。 */
+    private var lastNotifyAt = 0L
+
+    /** Application context（首次 enqueue 时捕获，通知用）。 */
+    private var notifContext: Context? = null
+
+    /** 创建下载通知渠道（低重要性：不响铃不弹横幅，进度静默刷新）。 */
+    private fun ensureChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.getNotificationChannel(DOWNLOAD_CHANNEL_ID) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        DOWNLOAD_CHANNEL_ID,
+                        "音乐下载",
+                        NotificationManager.IMPORTANCE_LOW
+                    )
+                )
+            }
+        }
+    }
+
+    /** 是否有通知权限（Android 13+ 未授权时静默跳过通知，不影响下载）。 */
+    private fun canNotify(context: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
+
+    /**
+     * 刷新聚合下载进度通知（v1.4.22）：
+     * - 进行中：显示「正在下载 n/m」+ 当前歌曲名 + 总进度条（300ms 节流）
+     * - 全部结束：显示「下载完成 n 首成功 / k 首失败」，5 秒后自动清除
+     * 任何异常静默吞掉——通知失败绝不能影响下载本身。
+     */
+    private fun refreshDownloadNotification() {
+        val context = notifContext ?: return
+        runCatching {
+            if (!canNotify(context)) return
+            ensureChannel(context)
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            val all = tasks.value
+            val active = all.filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
+            val done = all.count { it.status == DownloadStatus.DONE }
+            val failed = all.count { it.status == DownloadStatus.FAILED }
+
+            val contentIntent = PendingIntent.getActivity(
+                context, 0,
+                Intent(context, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            if (active.isNotEmpty()) {
+                // 进行中：节流刷新
+                val now = System.currentTimeMillis()
+                if (now - lastNotifyAt < 300) return
+                lastNotifyAt = now
+
+                val current = active.firstOrNull { it.status == DownloadStatus.DOWNLOADING }
+                    ?: active.first()
+                val totalProgress = active.sumOf { it.progress.toDouble() } / active.size
+                val builder = NotificationCompat.Builder(context, DOWNLOAD_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_stat_download)
+                    .setContentTitle("下载中 ${done}/${all.size}")
+                    .setContentText("${current.song.displayName} - ${current.song.artistName}")
+                    .setProgress(100, (totalProgress * 100).toInt(), false)
+                    .setOngoing(true)
+                    .setOnlyAlertOnce(true)
+                    .setContentIntent(contentIntent)
+                    .build()
+                nm.notify(DOWNLOAD_NOTIFICATION_ID, builder)
+            } else if (done > 0 || failed > 0) {
+                // 全部结束：完成通知（可滑掉，5 秒后自动清除）
+                lastNotifyAt = 0L
+                val title = if (failed == 0) "下载完成（${done} 首）"
+                else if (done == 0) "下载失败（${failed} 首）"
+                else "下载完成：${done} 首成功，${failed} 首失败"
+                val builder = NotificationCompat.Builder(context, DOWNLOAD_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_stat_download)
+                    .setContentTitle(title)
+                    .setContentText("已保存到 Music/D_Music")
+                    .setOngoing(false)
+                    .setAutoCancel(true)
+                    .setOnlyAlertOnce(true)
+                    .setContentIntent(contentIntent)
+                    .build()
+                nm.notify(DOWNLOAD_NOTIFICATION_ID, builder)
+                // 5 秒后自动清除（完成通知不宜久留）
+                scope.launch {
+                    kotlinx.coroutines.delay(5000)
+                    runCatching {
+                        (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                            .cancel(DOWNLOAD_NOTIFICATION_ID)
+                    }
+                }
+            } else {
+                // 任务列表被清空（removeTask/clearFinished）：撤掉残留的进度通知
+                nm.cancel(DOWNLOAD_NOTIFICATION_ID)
+            }
+        }
+    }
+
     /** 入队下载。同一首歌同品质重复提交会被忽略。 */
     fun enqueue(context: Context, song: Song, quality: String) {
         val id = "${song.source}:${song.id}:$quality"
         if (jobs.containsKey(id)) return
         val task = DownloadTask(song = song, quality = quality)
         updateTask { list -> listOf(task) + list.filterNot { it.id == id } }
+        notifContext = context.applicationContext   // v1.4.22：通知用
+        refreshDownloadNotification()
 
         jobs[id] = scope.launch {
             try {
                 updateTask { list ->
                     list.map { if (it.id == id) it.copy(status = DownloadStatus.DOWNLOADING) else it }
                 }
+                refreshDownloadNotification()
                 downloadSemaphore.withPermit {
                     val url = MusicApi.resolveUrl(song, quality)
                     if (url.isNullOrBlank()) {
@@ -100,10 +216,12 @@ object DownloadManager {
     fun removeTask(id: String) {
         jobs.remove(id)?.cancel()
         updateTask { list -> list.filterNot { it.id == id } }
+        refreshDownloadNotification()
     }
 
     fun clearFinished() {
         updateTask { list -> list.filter { it.status == DownloadStatus.DOWNLOADING } }
+        refreshDownloadNotification()
     }
 
     /**
@@ -741,6 +859,7 @@ object DownloadManager {
                             updateTask { list ->
                                 list.map { if (it.id == id) it.copy(progress = p) else it }
                             }
+                            refreshDownloadNotification()
                         }
                     }
                     out.flush()
@@ -762,6 +881,7 @@ object DownloadManager {
             }
             // 下载完成：记入本地歌曲列表（Store 负责去重与持久化）
             Store.addDownload(task.song)
+            refreshDownloadNotification()
         }
     }
 
@@ -901,6 +1021,7 @@ object DownloadManager {
                 if (it.id == id) it.copy(status = DownloadStatus.FAILED, error = msg) else it
             }
         }
+        refreshDownloadNotification()
     }
 
     private fun updateTask(transform: (List<DownloadTask>) -> List<DownloadTask>) {

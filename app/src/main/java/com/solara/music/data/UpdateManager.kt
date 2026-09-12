@@ -6,8 +6,10 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -17,12 +19,16 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 版本更新管理（v1.4.19）：
+ * 版本更新管理（v1.4.19 建立，v1.4.21 增强）：
  * - 启动时静默请求 GitHub releases/latest，失败静默跳过（不打扰用户）
+ * - v1.4.21：直连 GitHub 失败自动经 gh-proxy.com 镜像重试（国内直连时通时断）
+ * - v1.4.21：回前台节流补查（进程被播放服务保活时，启动检查不会再触发）
+ * - v1.4.21：关于页「检查更新」手动入口（[checkNow]，失败抛异常供 UI 提示）
  * - 有新版本 → [updateInfo] 置位；关于页版本号下显示「发现新版本」入口
- * - 下载 APK（带进度）→ 下载完成自动拉起系统安装器
+ * - 下载 APK（带进度，直连失败同样走镜像重试）→ 完成后拉起系统安装器
  * - lite / full 自动匹配各自 APK 资产（按文件名含不含 "lite" 区分）
  */
 object UpdateManager {
@@ -31,10 +37,16 @@ object UpdateManager {
     private const val LATEST_API =
         "https://api.github.com/repos/fyworld/D-Music/releases/latest"
 
+    /** v1.4.21：GitHub 直连失败时的镜像前缀（API 查询与 APK 下载共用）。 */
+    private const val MIRROR_PREFIX = "https://gh-proxy.com/"
+
+    /** 回前台补查节流间隔（30 分钟）。 */
+    private const val RECHECK_INTERVAL_MS = 30 * 60 * 1000L
+
     /** 更新信息：null = 无新版或未检查。 */
     data class UpdateInfo(
-        val versionName: String,      // 如 "1.4.19"
-        val versionTag: String,       // 如 "v1.4.19"
+        val versionName: String,      // 如 "1.4.21"
+        val versionTag: String,       // 如 "v1.4.21"
         val notes: String,            // 更新说明（markdown 纯文本化后展示）
         val apkUrl: String,           // 与当前 flavor 匹配的 APK 下载直链
         val apkSize: Long,            // APK 字节数（进度分母；0 = 未知）
@@ -53,7 +65,13 @@ object UpdateManager {
     val downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var downloadJob: kotlinx.coroutines.Job? = null
+    private var downloadJob: Job? = null
+
+    /** 上次发起检查的时间戳（回前台补查节流用）。 */
+    private var lastCheckAt = 0L
+
+    /** 并发去重：冷启动时 LaunchedEffect 与 ON_RESUME 几乎同时触发。 */
+    private val checkingNow = AtomicBoolean(false)
 
     /** 当前 App 是否 lite 纯净版。 */
     private val isLite: Boolean
@@ -71,19 +89,47 @@ object UpdateManager {
      * 不弹任何提示——更新检查永远不能打扰用户。
      */
     fun checkSilently() {
+        if (!checkingNow.compareAndSet(false, true)) return
         scope.launch {
-            val info = runCatching { fetchLatest() }.getOrNull()
-            if (info != null && isNewer(info.versionName, currentVersion())) {
-                Log.i(TAG, "发现新版本 ${info.versionName}（当前 ${currentVersion()}）")
-                updateInfo.value = info
+            try {
+                lastCheckAt = System.currentTimeMillis()
+                val info = runCatching { fetchLatest() }.getOrNull()
+                if (info != null && isNewer(info.versionName, currentVersion())) {
+                    Log.i(TAG, "发现新版本 ${info.versionName}（当前 ${currentVersion()}）")
+                    updateInfo.value = info
+                }
+            } finally {
+                checkingNow.set(false)
             }
         }
     }
 
-    /** 手动重查（关于页点「检查更新」用；同样静默失败，返回 null）。 */
-    suspend fun checkNow(): UpdateInfo? = runCatching { fetchLatest() }.getOrNull()
+    /**
+     * 回前台补查（v1.4.21）：进程被播放服务保活时，从后台切回只是 resume，
+     * 界面不会重新组合、启动检查不会再跑——在 ON_RESUME 时节流补查。
+     */
+    fun checkIfStale() {
+        if (System.currentTimeMillis() - lastCheckAt > RECHECK_INTERVAL_MS) {
+            checkSilently()
+        }
+    }
 
-    /** 当前版本（去掉 -lite 后缀的主版本，如 "1.4.19"）。 */
+    /**
+     * 手动检查（关于页「检查更新」用）：
+     * - 有新版：置 [updateInfo]（SolaraApp 全局弹窗自动弹出）并返回信息
+     * - 无新版：返回 null（调用方提示"已是最新"）
+     * - 失败：抛异常（调用方提示原因）——与静默检查不同，手动检查必须给反馈
+     */
+    suspend fun checkNow(): UpdateInfo? {
+        val info = fetchLatest()
+        lastCheckAt = System.currentTimeMillis()
+        return if (isNewer(info.versionName, currentVersion())) {
+            updateInfo.value = info
+            info
+        } else null
+    }
+
+    /** 当前版本（去掉 -lite 后缀的主版本，如 "1.4.21"）。 */
     fun currentVersion(): String =
         com.solara.music.BuildConfig.VERSION_NAME.substringBefore("-")
 
@@ -102,10 +148,22 @@ object UpdateManager {
         false
     }.getOrDefault(false)
 
-    /** 拉取 GitHub latest Release 并解析出与当前 flavor 匹配的 APK 资产。 */
+    /** 拉取 latest：直连失败自动经镜像重试（v1.4.21）。 */
     private suspend fun fetchLatest(): UpdateInfo = withContext(Dispatchers.IO) {
+        try {
+            fetchLatestFrom(LATEST_API)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "直连 GitHub API 失败（${e.message}），改走镜像重试")
+            fetchLatestFrom(MIRROR_PREFIX + LATEST_API)
+        }
+    }
+
+    /** 从指定 API 地址（直连或镜像）拉取并解析 latest Release（阻塞 IO，须在 IO 线程调用）。 */
+    private fun fetchLatestFrom(apiUrl: String): UpdateInfo {
         val req = Request.Builder()
-            .url(LATEST_API)
+            .url(apiUrl)
             .header("User-Agent", "D-Music-Updater")   // GitHub API 强制要求 UA
             .header("Accept", "application/vnd.github+json")
             .build()
@@ -113,7 +171,7 @@ object UpdateManager {
             if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
             val body = resp.body?.string() ?: throw IllegalStateException("empty body")
             val json = JSONObject(body)
-            val tagName = json.optString("tag_name", "")   // "v1.4.19"
+            val tagName = json.optString("tag_name", "")   // "v1.4.21"
             if (tagName.isBlank()) throw IllegalStateException("no tag_name")
             val versionName = tagName.removePrefix("v")
 
@@ -134,7 +192,7 @@ object UpdateManager {
             }
             val apk = apkObj ?: throw IllegalStateException("no matching apk for flavor")
 
-            UpdateInfo(
+            return UpdateInfo(
                 versionName = versionName,
                 versionTag = tagName,
                 notes = json.optString("body", "").trim(),
@@ -148,6 +206,7 @@ object UpdateManager {
     /**
      * 下载更新 APK 到应用外部私有目录（getExternalFilesDir，卸载自动清理，
      * 无需任何存储权限）。带进度回调，完成后置 Done 状态（由 UI 拉起安装）。
+     * v1.4.21：直连下载失败自动经镜像重试。
      */
     fun downloadApk(context: Context, info: UpdateInfo) {
         downloadJob?.cancel()
@@ -161,39 +220,20 @@ object UpdateManager {
                 val target = File(dir, fileName)
                 if (target.exists()) target.delete()
 
-                val req = Request.Builder().url(info.apkUrl).build()
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
-                    val body = resp.body ?: throw IllegalStateException("empty body")
-                    val total = if (info.apkSize > 0) info.apkSize else body.contentLength()
-                    var downloaded = 0L
-                    body.byteStream().use { input ->
-                        target.outputStream().buffered().use { output ->
-                            val buf = ByteArray(64 * 1024)
-                            var lastPublish = 0L
-                            while (true) {
-                                val n = input.read(buf)
-                                if (n < 0) break
-                                output.write(buf, 0, n)
-                                downloaded += n
-                                // 每 256KB 刷新一次进度，避免重组风暴
-                                if (total > 0) {
-                                    val p = downloaded.toFloat() / total
-                                    if (downloaded - lastPublish > 256 * 1024 || p >= 1f) {
-                                        downloadState.value = DownloadState.Progress(p.coerceIn(0f, 1f))
-                                        lastPublish = downloaded
-                                    }
-                                }
-                            }
-                            output.flush()
-                        }
-                    }
-                    if (total > 0 && downloaded < total) throw IllegalStateException("下载不完整")
+                try {
+                    downloadTo(target, info.apkUrl, info.apkSize)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 直连失败 → 镜像重试（v1.4.21）
+                    Log.w(TAG, "直连下载失败（${e.message}），改走镜像重试")
+                    if (target.exists()) target.delete()
+                    downloadTo(target, MIRROR_PREFIX + info.apkUrl, info.apkSize)
                 }
                 downloadState.value = DownloadState.Done(target)
                 Log.i(TAG, "APK 下载完成: $target (${target.length()} bytes)")
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) {
+                if (e is CancellationException) {
                     // 用户取消：只清理 APK 半成品文件
                     runCatching {
                         appContext.getExternalFilesDir(null)?.let { dir ->
@@ -206,6 +246,39 @@ object UpdateManager {
                 Log.w(TAG, "APK 下载失败: ${e.message}")
                 downloadState.value = DownloadState.Failed(e.message ?: "下载失败")
             }
+        }
+    }
+
+    /** 从指定 URL（直连或镜像）下载 APK 到 target，进度写 [downloadState]（阻塞 IO）。 */
+    private fun downloadTo(target: File, url: String, expectedSize: Long) {
+        val req = Request.Builder().url(url).build()
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
+            val body = resp.body ?: throw IllegalStateException("empty body")
+            val total = if (expectedSize > 0) expectedSize else body.contentLength()
+            var downloaded = 0L
+            body.byteStream().use { input ->
+                target.outputStream().buffered().use { output ->
+                    val buf = ByteArray(64 * 1024)
+                    var lastPublish = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        output.write(buf, 0, n)
+                        downloaded += n
+                        // 每 256KB 刷新一次进度，避免重组风暴
+                        if (total > 0) {
+                            val p = downloaded.toFloat() / total
+                            if (downloaded - lastPublish > 256 * 1024 || p >= 1f) {
+                                downloadState.value = DownloadState.Progress(p.coerceIn(0f, 1f))
+                                lastPublish = downloaded
+                            }
+                        }
+                    }
+                    output.flush()
+                }
+            }
+            if (total > 0 && downloaded < total) throw IllegalStateException("下载不完整")
         }
     }
 

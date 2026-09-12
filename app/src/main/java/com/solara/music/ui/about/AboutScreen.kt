@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
@@ -46,6 +47,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -88,6 +91,10 @@ fun AboutScreen(onBack: () -> Unit) {
     var showUpdate by remember { mutableStateOf(false) }
     val updateInfo by UpdateManager.updateInfo.collectAsState()
     val context = LocalContext.current
+
+    // v1.4.21：手动检查更新——失败/无新版都给明确反馈（静默检查失败时用户无从得知）
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var checkState by remember { mutableStateOf<String?>(null) }   // null=空闲 "checking"=检查中 其他=结果文案
 
     Column(
         modifier = Modifier
@@ -164,6 +171,52 @@ fun AboutScreen(onBack: () -> Unit) {
                         text = "发现新版本 v${updateInfo?.versionName}",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            } else if (checkState != null && checkState != "checking") {
+                // v1.4.21：手动检查的结果反馈（已是最新/失败原因——检查中由按钮内 spinner 展示）
+                val result = checkState
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = result ?: "",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (result?.startsWith("检查失败") == true)
+                        MaterialTheme.colorScheme.error
+                    else
+                        MaterialTheme.colorScheme.primary
+                )
+            }
+            // v1.4.21：手动「检查更新」入口——启动静默检查失败时（GitHub 直连时通时断）
+            // 用户无从得知也无从重试，这里给一个带反馈的手动入口
+            if (updateInfo == null) {
+                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    onClick = {
+                        if (checkState == "checking") return@TextButton
+                        checkState = "checking"
+                        scope.launch {
+                            checkState = try {
+                                val info = UpdateManager.checkNow()
+                                if (info != null) "发现新版本 v${info.versionName}"
+                                else "已是最新版本（v${UpdateManager.currentVersion()}）"
+                            } catch (e: Exception) {
+                                "检查失败：${e.message ?: "网络错误"}"
+                            }
+                        }
+                    },
+                    enabled = checkState != "checking"
+                ) {
+                    if (checkState == "checking") {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        text = if (checkState == "checking") "正在检查…" else "检查更新",
+                        style = MaterialTheme.typography.labelLarge
                     )
                 }
             }
