@@ -288,7 +288,14 @@ private fun DownloadRow(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("移除") },
+                    text = {
+                        // v1.4.23：进行中任务显示「取消下载」（现在能真正中断），已结束显示「移除」
+                        Text(
+                            if (task.status == DownloadStatus.DOWNLOADING ||
+                                task.status == DownloadStatus.PENDING
+                            ) "取消下载" else "移除"
+                        )
+                    },
                     leadingIcon = { Icon(Icons.Filled.Delete, null) },
                     onClick = {
                         menuOpen = false

@@ -149,7 +149,11 @@ fun UpdateDialog(
                                 uriHandler.openUri(info.htmlUrl)
                             }) { Text("下载页") }
                         }
-                        TextButton(onClick = onDismiss) { Text("暂不更新") }
+                        // v1.4.23：记住跳过的版本——重启不再自动弹窗，直到更新的版本出现
+                        TextButton(onClick = {
+                            UpdateManager.skipVersion(info.versionName)
+                            onDismiss()
+                        }) { Text("暂不更新") }
                     }
                 }
             }

@@ -392,6 +392,16 @@ object Store {
         )
     }
 
+    // ---------- 更新跳过版本（v1.4.23：「暂不更新」后本版本不再自动弹窗） ----------
+
+    /** 用户点了「暂不更新」的版本号；null = 从未跳过。 */
+    fun skippedVersion(): String? = prefs.getString("skipped_version", null)
+
+    /** 记录跳过的版本：同一版本重启不再自动弹更新提示，直到更新的版本出现。 */
+    fun saveSkippedVersion(version: String) {
+        prefs.edit().putString("skipped_version", version).apply()
+    }
+
     // ---------- 最近播放（v1.3.8） ----------
 
     /** 记录一次播放：去重后插到最前，超上限裁旧。 */

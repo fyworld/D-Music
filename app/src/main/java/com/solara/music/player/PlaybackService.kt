@@ -37,6 +37,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 后台播放服务：ExoPlayer + MediaSession + 自定义媒体通知。
@@ -205,37 +206,77 @@ class PlaybackService : MediaSessionService() {
 
     /**
      * v1.4.22：冷启动异步加载当前歌曲封面，完成后刷新占位通知。
-     * - 在线歌：CoverCache → MusicApi.fetchPicUrl → 下载解码
+     * v1.4.23 修复"封面一直是默认图标"：
+     * - URL.openStream() 无超时且只试一次（冷启动网络未就绪即静默失败）——
+     *   改 OkHttp（10s 超时）+ 最多 3 次重试（间隔 2s，等网络就绪）
+     * - 原图可能超 RemoteViews 的 Binder 事务 1MB 限制（刷新静默失败）——
+     *   统一缩放到 256x256 再 setImageViewBitmap
      * - 本地歌：LocalCoverExtractor（URL 缓存/内嵌图/同名图片）
      * - 仅当 player 仍未装载曲目时刷新（Provider 接管后占位通知已无意义）
      */
     private fun loadPlaceholderCover() {
         val song = PlayerManager.currentSong.value ?: return
         scope.launch(Dispatchers.IO) {
-            val bitmap: Bitmap? = runCatching {
-                if (song.source == "local") {
+            var bitmap: Bitmap? = null
+            if (song.source == "local") {
+                bitmap = runCatching {
                     LocalCoverExtractor.getCover(this@PlaybackService, song)
-                } else {
-                    val cacheKey = "${song.source}:${song.picId.ifBlank { song.id }}"
-                    val url = com.solara.music.ui.components.CoverCache.get(cacheKey)
-                        ?: com.solara.music.data.MusicApi.fetchPicUrl(song)?.also {
-                            if (it != null) com.solara.music.ui.components.CoverCache.put(cacheKey, it)
-                        }
-                    url?.let { u ->
-                        java.net.URL(u).openStream().use {
-                            android.graphics.BitmapFactory.decodeStream(it)
-                        }
-                    }
+                }.getOrNull()
+            } else {
+                val cacheKey = "${song.source}:${song.picId.ifBlank { song.id }}"
+                // 最多 3 次尝试（间隔 2s）：冷启动时网络可能尚未就绪
+                repeat(3) { attempt ->
+                    bitmap = runCatching {
+                        val url = com.solara.music.ui.components.CoverCache.get(cacheKey)
+                            ?: com.solara.music.data.MusicApi.fetchPicUrl(song)?.also {
+                                com.solara.music.ui.components.CoverCache.put(cacheKey, it)
+                            }
+                        url?.let { u -> downloadBitmap(u) }
+                    }.getOrNull()
+                    if (bitmap != null) return@repeat
+                    if (attempt < 2) kotlinx.coroutines.delay(2000)
                 }
-            }.getOrNull()
-            if (bitmap != null) {
-                placeholderCover = bitmap
-                // player 仍空载（占位期间）才刷新；已装载则 Provider 接管，无需处理
-                if ((mediaSession?.player?.mediaItemCount ?: 0) == 0) {
-                    notificationManager.notify(NOTIFICATION_ID, buildServiceNotification(bitmap))
+            }
+            val scaled = bitmap?.let { scaleForNotification(it) }
+            if (scaled != null) {
+                placeholderCover = scaled
+                // v1.4.23 崩溃修复：ExoPlayer 只能主线程访问——IO 线程读
+                // mediaSession.player.mediaItemCount 会抛 IllegalStateException
+                // 闪退。封面在 IO 线程下载完成后切回主线程再检查与刷新通知。
+                withContext(Dispatchers.Main) {
+                    // player 仍空载（占位期间）才刷新；已装载则 Provider 接管，无需处理
+                    if ((mediaSession?.player?.mediaItemCount ?: 0) == 0) {
+                        notificationManager.notify(NOTIFICATION_ID, buildServiceNotification(scaled))
+                    }
                 }
             }
         }
+    }
+
+    /** OkHttp 下载封面位图（10s 超时，替代无超时的 URL.openStream）。 */
+    private fun downloadBitmap(url: String): Bitmap? {
+        val client = okhttp3.OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+        return client.newCall(okhttp3.Request.Builder().url(url).build()).execute().use { resp ->
+            if (!resp.isSuccessful) return null
+            val bytes = resp.body?.bytes() ?: return null
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }
+    }
+
+    /**
+     * 封面缩放到 256x256 内（v1.4.23）：RemoteViews 的 setImageViewBitmap 走
+     * Binder 事务（异步池上限约 1MB），大位图会超限导致通知刷新静默失败。
+     */
+    private fun scaleForNotification(src: Bitmap): Bitmap {
+        val maxSide = 256
+        if (src.width <= maxSide && src.height <= maxSide) return src
+        val scale = maxSide.toFloat() / maxOf(src.width, src.height)
+        return runCatching {
+            Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true)
+        }.getOrDefault(src)
     }
 
     /**

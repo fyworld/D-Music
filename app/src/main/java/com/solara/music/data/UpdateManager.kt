@@ -129,9 +129,15 @@ object UpdateManager {
         } else null
     }
 
-    /** 当前版本（去掉 -lite 后缀的主版本，如 "1.4.21"）。 */
+    /** 当前版本（去掉 -lite 后缀的主版本，如 "1.4.23"）。 */
     fun currentVersion(): String =
         com.solara.music.BuildConfig.VERSION_NAME.substringBefore("-")
+
+    /** 记住用户「暂不更新」的版本（v1.4.23）：重启不再自动弹窗，直到更新的版本出现。 */
+    fun skipVersion(version: String) = Store.saveSkippedVersion(version)
+
+    /** 被跳过的版本号；null = 无跳过记录。 */
+    fun skippedVersion(): String? = Store.skippedVersion()
 
     /**
      * 语义化版本比较：latest > current 才提示。

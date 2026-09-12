@@ -139,7 +139,11 @@ fun SolaraApp() {
         com.solara.music.data.UpdateManager.checkSilently()
     }
     LaunchedEffect(updateInfo) {
-        if (updateInfo != null) showUpdateDialog = true
+        val info = updateInfo
+        // v1.4.23：「暂不更新」过的版本重启不再自动弹窗（关于页入口仍显示，新版本出现再弹）
+        if (info != null && info.versionName != com.solara.music.data.UpdateManager.skippedVersion()) {
+            showUpdateDialog = true
+        }
     }
 
     val downloadTasks by DownloadManager.tasks.collectAsState()

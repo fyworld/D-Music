@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -87,17 +88,34 @@ object DownloadManager {
     /** Application context（首次 enqueue 时捕获，通知用）。 */
     private var notifContext: Context? = null
 
-    /** 创建下载通知渠道（低重要性：不响铃不弹横幅，进度静默刷新）。 */
+    /**
+     * 活动下载的 OkHttp Call（v1.4.23）：key=任务 id。
+     * 协程 cancel 杀不掉阻塞中的 execute()——必须 call.cancel() 硬中断，
+     * 否则"取消下载"后文件仍在后台继续写。
+     */
+    private val activeCalls = ConcurrentHashMap<String, Call>()
+
+    /** 创建下载通知渠道。
+     *  v1.4.23：IMPORTANCE_LOW 会被 MIUI/HyperOS 折叠进"不重要通知"里根本看不到，
+     *  改为 IMPORTANCE_DEFAULT（不折叠）；静音 + setOnlyAlertOnce 保证不打扰。
+     *  渠道重要性创建后不可修改——检测到旧 LOW 渠道时删除重建。 */
     private fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val existing = nm.getNotificationChannel(DOWNLOAD_CHANNEL_ID)
+            if (existing != null && existing.importance < NotificationManager.IMPORTANCE_DEFAULT) {
+                nm.deleteNotificationChannel(DOWNLOAD_CHANNEL_ID)
+            }
             if (nm.getNotificationChannel(DOWNLOAD_CHANNEL_ID) == null) {
                 nm.createNotificationChannel(
                     NotificationChannel(
                         DOWNLOAD_CHANNEL_ID,
                         "音乐下载",
-                        NotificationManager.IMPORTANCE_LOW
-                    )
+                        NotificationManager.IMPORTANCE_DEFAULT
+                    ).apply {
+                        setSound(null, null)   // 进度通知不出声
+                        enableVibration(false)
+                    }
                 )
             }
         }
@@ -214,6 +232,8 @@ object DownloadManager {
     }
 
     fun removeTask(id: String) {
+        // v1.4.23：先硬中断 OkHttp Call（协程 cancel 杀不掉阻塞的 execute()）
+        activeCalls.remove(id)?.cancel()
         jobs.remove(id)?.cancel()
         updateTask { list -> list.filterNot { it.id == id } }
         refreshDownloadNotification()
@@ -836,54 +856,84 @@ object DownloadManager {
             .header("User-Agent", "Mozilla/5.0 (Linux; Android) SolaraAndroid/1.0")
             .build()
 
-        client.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-            val body = resp.body ?: throw IOException("响应体为空")
-            val total = body.contentLength()
-            var downloaded = 0L
-            var lastEmit = 0L
+        // v1.4.23：登记 Call 供硬取消；execute() 阻塞期间 call.cancel() 会立即
+        // 中断读流并抛 IOException，finally 里注销
+        val call = client.newCall(request)
+        activeCalls[id] = call
+        try {
+            call.execute().use { resp ->
+                if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
+                val body = resp.body ?: throw IOException("响应体为空")
+                val total = body.contentLength()
+                var downloaded = 0L
+                var lastEmit = 0L
 
-            val sink = openSink(context, safeName) ?: throw IOException("无法创建下载文件")
-            sink.use { out ->
-                body.byteStream().use { input ->
-                    val buf = ByteArray(64 * 1024)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                        downloaded += n
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmit > 300) {
-                            lastEmit = now
-                            val p = if (total > 0) downloaded.toFloat() / total else 0f
-                            updateTask { list ->
-                                list.map { if (it.id == id) it.copy(progress = p) else it }
+                val sink = openSink(context, safeName) ?: throw IOException("无法创建下载文件")
+                try {
+                    sink.use { out ->
+                        body.byteStream().use { input ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                downloaded += n
+                                val now = System.currentTimeMillis()
+                                if (now - lastEmit > 300) {
+                                    lastEmit = now
+                                    val p = if (total > 0) downloaded.toFloat() / total else 0f
+                                    updateTask { list ->
+                                        list.map { if (it.id == id) it.copy(progress = p) else it }
+                                    }
+                                    refreshDownloadNotification()
+                                }
                             }
-                            refreshDownloadNotification()
+                            out.flush()
                         }
                     }
-                    out.flush()
+
+                    // 下载完成：拉封面/歌词并嵌入文件（失败不影响下载结果）
+                    runCatching { embedTags(context, sink, safeName, task) }
+
+                    val savedPath = sink.savedPath
+                    updateTask { list ->
+                        list.map {
+                            if (it.id == id) it.copy(
+                                status = DownloadStatus.DONE,
+                                progress = 1f,
+                                filePath = savedPath
+                            ) else it
+                        }
+                    }
+                    // 下载完成：记入本地歌曲列表（Store 负责去重与持久化）
+                    Store.addDownload(task.song)
+                    refreshDownloadNotification()
+                } finally {
+                    // v1.4.23：取消/失败时清理半成品文件（IS_PENDING 的 MediaStore 条目
+                    // 不清理会永久占坑，文件管理器里看到一个 0 字节坏文件）
+                    if (taskCancelled(id)) {
+                        runCatching {
+                            (sink as? MediaStoreSink)?.let { s ->
+                                s.pendingUri?.let { uri ->
+                                    context.contentResolver.delete(uri, null, null)
+                                }
+                            } ?: run {
+                                // Android 9-：删本地半成品
+                                val f = File(sink.savedPath)
+                                if (f.exists()) f.delete()
+                            }
+                        }
+                    }
                 }
             }
-
-            // 下载完成：拉封面/歌词并嵌入文件（失败不影响下载结果）
-            runCatching { embedTags(context, sink, safeName, task) }
-
-            val savedPath = sink.savedPath
-            updateTask { list ->
-                list.map {
-                    if (it.id == id) it.copy(
-                        status = DownloadStatus.DONE,
-                        progress = 1f,
-                        filePath = savedPath
-                    ) else it
-                }
-            }
-            // 下载完成：记入本地歌曲列表（Store 负责去重与持久化）
-            Store.addDownload(task.song)
-            refreshDownloadNotification()
+        } finally {
+            activeCalls.remove(id)
         }
     }
+
+    /** 任务是否已被用户移除（列表里已无此 id）。 */
+    private fun taskCancelled(id: String): Boolean =
+        jobs.containsKey(id).not() && tasks.value.none { it.id == id }
 
     /**
      * 嵌入封面/歌词到刚下载的文件（v1.3.9）。
@@ -961,32 +1011,43 @@ object DownloadManager {
                 MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values
             ) ?: return null
             val out = context.contentResolver.openOutputStream(uri) ?: return null
-            object : CountingSink(out) {
-                override val savedPath: String
-                    get() = "${Environment.DIRECTORY_MUSIC}/D_Music/$fileName"
-            }.also {
-                it.pendingUri = uri
-                it.contextRef = context
-            }
+            MediaStoreSink(out, uri, "${Environment.DIRECTORY_MUSIC}/D_Music/$fileName", context)
         } else {
             val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "D_Music")
             if (!dir.exists()) dir.mkdirs()
             val file = File(dir, fileName)
-            object : CountingSink(file.outputStream()) {
-                override val savedPath: String get() = file.absolutePath
-            }
+            FileSink(file.outputStream(), file.absolutePath)
         }
     }
 
+    /** MediaStore 输出流（10+）：暴露 pendingUri 供取消时删除半成品条目。 */
+    private class MediaStoreSink(
+        out: java.io.OutputStream,
+        uri: Uri,
+        override val savedPath: String,
+        contextRef: Context
+    ) : CountingSink(out) {
+        init {
+            pendingUri = uri
+            this.contextRef = contextRef
+        }
+    }
+
+    /** 本地文件输出流（9-）。 */
+    private class FileSink(
+        out: java.io.OutputStream,
+        override val savedPath: String
+    ) : CountingSink(out)
+
     /** 包装 OutputStream，close 时把 MediaStore 的 IS_PENDING 置为完成。 */
     private abstract class CountingSink(out: java.io.OutputStream) : java.io.OutputStream() {
-        var pendingUri: android.net.Uri? = null
+        open var pendingUri: Uri? = null
         var contextRef: Context? = null
 
-        override fun write(b: Int) = unit { delegate.write(b) }
-        override fun write(b: ByteArray) = unit { delegate.write(b) }
-        override fun write(b: ByteArray, off: Int, len: Int) = unit { delegate.write(b, off, len) }
-        override fun flush() = unit { delegate.flush() }
+        override fun write(b: Int) { delegate.write(b) }
+        override fun write(b: ByteArray) { delegate.write(b) }
+        override fun write(b: ByteArray, off: Int, len: Int) { delegate.write(b, off, len) }
+        override fun flush() { delegate.flush() }
 
         override fun close() {
             runCatching { delegate.close() }
@@ -1009,10 +1070,6 @@ object DownloadManager {
 
         abstract val savedPath: String
         protected val delegate: java.io.OutputStream = out
-
-        private inline fun unit(block: () -> Unit) {
-            block()
-        }
     }
 
     private fun fail(id: String, msg: String) {
