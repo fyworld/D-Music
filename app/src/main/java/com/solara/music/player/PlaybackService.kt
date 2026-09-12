@@ -115,7 +115,7 @@ class PlaybackService : MediaSessionService() {
                             val song = PlayerManager.currentSong.value
                             if (song != null) {
                                 Store.toggleFavorite(song)
-                                refreshFavoriteOnNotification()
+                                refreshFavorite()
                             }
                         }
                         ACTION_STOP_EXIT -> PlayerManager.stopAndExit(applicationContext)
@@ -129,7 +129,7 @@ class PlaybackService : MediaSessionService() {
         scope.launch {
             combine(Store.favorites, PlayerManager.currentSong) { _, _ -> Unit }
                 .drop(1) // 跳过初始值，避免启动时空队列触发无谓刷新
-                .collect { refreshFavoriteOnNotification() }
+                .collect { refreshFavorite() }
         }
 
         // 自定义媒体通知（RemoteViews 布局），替换 Media3 默认通知
@@ -160,26 +160,52 @@ class PlaybackService : MediaSessionService() {
 
     /**
      * 常驻占位通知：未播放时显示（播放后被自定义媒体通知替换，同 ID）。
+     *
+     * v1.4.20：队列有歌时直接用 APP 自定义媒体样式（与播放中通知完全一致），
+     * 完全退出后再进入，通知栏不再先出现"系统默认样式"、点播放才变样。
+     * 时序保证：onCreate 中 attachPlayer（内含队列恢复）先于本方法执行，
+     * currentSong 已就绪。无歌（首次安装）时退回简单文本样式。
      */
     private fun buildServiceNotification(): Notification {
+        val current = PlayerManager.currentSong.value
+        if (current != null) {
+            return buildMediaStyleNotification(
+                this,
+                current.displayName,
+                current.artistName,
+                playing = false, // 占位 = 未播放，显示播放▶图标
+                isFavorite = Store.isFavorite(current)
+            )
+        }
         val contentIntent = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        val current = PlayerManager.currentSong.value
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(current?.displayName ?: "D Music")
-            .setContentText(
-                if (current != null) current.artistName else "点击打开 D Music"
-            )
+            .setContentTitle("D Music")
+            .setContentText("点击打开 D Music")
             .setSmallIcon(R.drawable.ic_stat_music)
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
+    }
+
+    /**
+     * v1.4.20：刷新通知收藏图标——统一入口。
+     * 播放中（player 已装载）走 setCustomLayout 触发 Media3 重建；
+     * 占位通知期间（player 空载但队列有歌）直接重建占位通知。
+     */
+    private fun refreshFavorite() {
+        refreshFavoriteOnNotification()
+        if ((mediaSession?.player?.mediaItemCount ?: 0) == 0 &&
+            PlayerManager.currentSong.value != null
+        ) {
+            notificationManager.notify(NOTIFICATION_ID, buildServiceNotification())
+        }
     }
 
     /**
@@ -230,7 +256,7 @@ class PlaybackService : MediaSessionService() {
                 val song = PlayerManager.currentSong.value
                 if (song != null) {
                     Store.toggleFavorite(song)
-                    refreshFavoriteOnNotification()
+                    refreshFavorite()
                 }
             }
         }
@@ -430,4 +456,76 @@ class CustomMediaNotificationProvider(private val context: Context) :
         // 实际处理逻辑全部在 PlaybackService 的 onCustomCommand 回调里。
         return false
     }
+}
+
+/**
+ * v1.4.20：构建 APP 自定义媒体样式通知（占位通知复用）。
+ * 与 [CustomMediaNotificationProvider] 的布局完全一致：展开态四键 + 收起态四键，
+ * 按钮全部走自建 PendingIntent.getService（onStartCommand 拦截分发）。
+ * 占位场景 player 空载、无封面元数据，用占位封面图。
+ */
+internal fun buildMediaStyleNotification(
+    context: Context,
+    title: String,
+    artist: String,
+    playing: Boolean,
+    isFavorite: Boolean
+): Notification {
+    fun servicePendingIntent(action: String, requestCode: Int) =
+        PendingIntent.getService(
+            context,
+            requestCode,
+            Intent(context, PlaybackService::class.java).setAction(action),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+    val contentIntent = PendingIntent.getActivity(
+        context,
+        0,
+        Intent(context, MainActivity::class.java),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
+
+    val primaryColor = context.getColor(R.color.notif_text_primary)
+    val favoriteColor = 0xFFE53935.toInt()
+
+    fun RemoteViews.applyMediaLayout() {
+        setTextViewText(R.id.notif_title, title)
+        setTextViewText(R.id.notif_artist, artist)
+        setOnClickPendingIntent(R.id.notif_close, servicePendingIntent(PlaybackService.ACTION_STOP_EXIT, 1))
+        setOnClickPendingIntent(R.id.notif_btn_favorite, servicePendingIntent(PlaybackService.ACTION_FAVORITE, 2))
+        setOnClickPendingIntent(R.id.notif_btn_prev, servicePendingIntent(PlaybackService.ACTION_PREVIOUS, 3))
+        setOnClickPendingIntent(R.id.notif_btn_play_pause, servicePendingIntent(PlaybackService.ACTION_TOGGLE, 4))
+        setOnClickPendingIntent(R.id.notif_btn_next, servicePendingIntent(PlaybackService.ACTION_NEXT, 5))
+        setImageViewResource(
+            R.id.notif_btn_favorite,
+            if (isFavorite) R.drawable.ic_stat_heart_filled else R.drawable.ic_stat_heart
+        )
+        setInt(
+            R.id.notif_btn_favorite, "setColorFilter",
+            if (isFavorite) favoriteColor else primaryColor
+        )
+        setImageViewResource(
+            R.id.notif_btn_play_pause,
+            if (playing) R.drawable.ic_stat_pause else R.drawable.ic_stat_play
+        )
+        setImageViewResource(R.id.notif_cover, R.drawable.notif_cover_placeholder)
+    }
+
+    val expanded = RemoteViews(context.packageName, R.layout.notification_media).apply { applyMediaLayout() }
+    val compact = RemoteViews(context.packageName, R.layout.notification_media_compact).apply { applyMediaLayout() }
+
+    return NotificationCompat.Builder(context, PlaybackService.CHANNEL_ID)
+        .setContentTitle(title)
+        .setContentText(artist)
+        .setContentIntent(contentIntent)
+        .setSmallIcon(R.drawable.ic_stat_music)
+        .setOngoing(false)
+        .setDeleteIntent(servicePendingIntent(PlaybackService.ACTION_STOP_EXIT, 1))
+        .setOnlyAlertOnce(true)
+        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+        .setCustomContentView(compact)
+        .setCustomBigContentView(expanded)
+        .build()
 }

@@ -18,3 +18,10 @@ app/build/
 # 开发过程记录文件（不发布）
 bug.txt
 关于D music.txt
+
+# 本地项目资料（不发布）——一个项目一个文件夹：
+# 产物归档 / 设计脚本 / 上游参考 / 内部文档全部收在仓库目录内但 git 不跟踪
+/releases/
+/design/
+/reference/
+/docs/

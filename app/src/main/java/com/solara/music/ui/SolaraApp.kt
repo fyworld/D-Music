@@ -93,16 +93,25 @@ private enum class MePage { SETTINGS, DOWNLOADS, LOCAL_SONGS, ABOUT }
 
 @Composable
 fun SolaraApp() {
-    var tab by rememberSaveable { mutableStateOf(0) }
-    var showPlayer by remember { mutableStateOf(false) }
+    // v1.4.20：初始界面状态从 Store 恢复——完全退出后（通知栏/桌面图标/
+    // 后台切换）再进入，回到最后退出的界面而不是默认探索页。
+    val savedUi = remember { Store.readUiState() }
+    var tab by rememberSaveable { mutableStateOf(savedUi?.first ?: 0) }
+    var showPlayer by remember { mutableStateOf(savedUi?.third == true) }
     var meMenuOpen by remember { mutableStateOf(false) }
 
     // "我的"页面：null 表示未进入；进入后显示设置或下载管理
-    var mePage by rememberSaveable { mutableStateOf<String?>(null) }
+    var mePage by rememberSaveable { mutableStateOf<String?>(savedUi?.second) }
 
     // 全局弹窗状态：加入歌单 / 下载品质选择
     var playlistTarget by remember { mutableStateOf<Song?>(null) }
     var downloadTarget by remember { mutableStateOf<Song?>(null) }
+
+    // v1.4.20：界面状态变化即持久化（apply 异步，无性能负担）——
+    // 完全退出后从任何入口再进入，恢复最后所在界面
+    LaunchedEffect(tab, mePage, showPlayer) {
+        Store.saveUiState(tab, mePage, showPlayer)
+    }
 
     val currentSong by PlayerManager.currentSong.collectAsState()
     val searchVm: SearchViewModel = viewModel()

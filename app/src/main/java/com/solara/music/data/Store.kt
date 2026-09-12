@@ -70,6 +70,9 @@ object Store {
     // 扫描文件夹记忆（v1.4.3：null=默认 Music/D_Music）
     private const val KEY_SCAN_FOLDER = "scan_folder"
 
+    /** v1.4.20：最后退出时的主界面状态（tab / mePage / showPlayer）。 */
+    private const val KEY_UI_STATE = "ui_state"
+
     /** 最近播放列表上限：超出裁掉最旧的。 */
     private const val RECENT_LIMIT = 300
 
@@ -361,6 +364,32 @@ object Store {
     fun updateQueueSnapshot(songs: List<Song>, index: Int) {
         queueSnapshot = songs
         queueIndexSnapshot = index
+    }
+
+    // ---------- 界面状态恢复（v1.4.20） ----------
+
+    /**
+     * 持久化最后退出时的主界面状态。完全退出后（无论从通知栏、桌面图标
+     * 还是后台切换）再进入，恢复到最后所在的界面而不是默认探索页。
+     * tab：0 探索 / 1 搜索 / 2 收藏 / 3 最近；mePage：SETTINGS/DOWNLOADS/
+     * LOCAL_SONGS/ABOUT 或空；showPlayer：是否停在播放页。
+     */
+    fun saveUiState(tab: Int, mePage: String?, showPlayer: Boolean) {
+        prefs.edit()
+            .putInt("ui_state_tab", tab)
+            .putString("ui_state_me_page", mePage)
+            .putBoolean("ui_state_show_player", showPlayer)
+            .apply()
+    }
+
+    /** 读取持久化的界面状态：null = 无记录（首次安装），恢复默认探索页。 */
+    fun readUiState(): Triple<Int, String?, Boolean>? {
+        if (!prefs.contains("ui_state_tab")) return null
+        return Triple(
+            prefs.getInt("ui_state_tab", 0),
+            prefs.getString("ui_state_me_page", null),
+            prefs.getBoolean("ui_state_show_player", false)
+        )
     }
 
     // ---------- 最近播放（v1.3.8） ----------

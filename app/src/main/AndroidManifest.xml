@@ -46,9 +46,12 @@
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Solara">
 
+        <!-- v1.4.20：singleTask——从通知栏点击进入复用现有实例（恢复最后界面），
+             不再新建实例落到默认探索页；后台切换/桌面图标进入行为不变 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
