@@ -36,7 +36,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun LibraryScreen(
     onAddToPlaylist: (Song) -> Unit = {},
-    onDownload: (Song) -> Unit = {}
+    onDownload: (Song) -> Unit = {},
+    onShowMessage: (String) -> Unit = {}
 ) {
     val favorites by Store.favorites.collectAsState()
     val playlists by Store.playlists.collectAsState()
@@ -80,11 +81,13 @@ fun LibraryScreen(
             when (page) {
                 0 -> FavoritesScreen(
                     onAddToPlaylist = onAddToPlaylist,
-                    onDownload = onDownload
+                    onDownload = onDownload,
+                    onShowMessage = onShowMessage
                 )
                 else -> PlaylistsScreen(
                     onAddToPlaylist = onAddToPlaylist,
-                    onDownload = onDownload
+                    onDownload = onDownload,
+                    onShowMessage = onShowMessage
                 )
             }
         }

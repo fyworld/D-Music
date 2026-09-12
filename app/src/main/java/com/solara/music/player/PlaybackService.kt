@@ -15,6 +15,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.Player
 import androidx.media3.common.util.BitmapLoader
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
@@ -69,7 +71,10 @@ class PlaybackService : MediaSessionService() {
         notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         createChannel()
 
-        val player = ExoPlayer.Builder(this)
+        // v1.4.25：播放缓存——在线歌曲边播边落盘，重听秒开零流量
+        PlaybackCache.init(this)
+
+        val playerBuilder = ExoPlayer.Builder(this)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -78,12 +83,35 @@ class PlaybackService : MediaSessionService() {
                 /* handleAudioFocus = */ true
             )
             .setHandleAudioBecomingNoisy(true)
-            .build()
+
+        // 挂缓存：CacheDataSource 优先读本地缓存，未命中走网络边下边存。
+        // 上限 0（设置关闭）时不挂，直连播放
+        val pbCache = PlaybackCache.get()
+        val player = if (pbCache != null) {
+            @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+            val cacheFactory = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                .setCache(pbCache)
+                .setUpstreamDataSourceFactory(
+                    androidx.media3.datasource.DefaultDataSource.Factory(this)
+                )
+                // 缓存 key 由 MediaItem.customCacheKey 提供（带音质）
+                .setCacheKeyFactory { dataSpec -> dataSpec.key ?: dataSpec.uri.toString() }
+            playerBuilder
+                .setMediaSourceFactory(
+                    androidx.media3.exoplayer.source.DefaultMediaSourceFactory(cacheFactory)
+                )
+                .build()
+        } else {
+            playerBuilder.build()
+        }
 
         // 把 player 注入给全局控制器，状态流与队列恢复都会在这里触发
+        // （PlayerManager 持有原始 ExoPlayer，播放逻辑零改动）
         PlayerManager.attachPlayer(player, this)
 
-        mediaSession = MediaSession.Builder(this, player)
+        // v1.4.24：MediaSession 挂切歌转发包装器——蓝牙耳机/系统媒体面板
+        // 的上一首/下一首命令才能到达应用层队列（详见 QueueForwardingPlayer）
+        mediaSession = MediaSession.Builder(this, QueueForwardingPlayer(player))
             .setCallback(object : MediaSession.Callback {
                 override fun onConnect(
                     session: MediaSession,
@@ -123,6 +151,47 @@ class PlaybackService : MediaSessionService() {
                         ACTION_STOP_EXIT -> PlayerManager.stopAndExit(applicationContext)
                     }
                     return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+
+                /**
+                 * v1.4.25：媒体按键终极兜底——在 Media3 内部分发之前直接拦截
+                 * 四种切歌键码，转发给应用层队列。
+                 *
+                 * 为什么需要：ForwardingPlayer 覆盖了标准命令路径，但部分
+                 * 蓝牙栈/ROM（MIUI 等）可能走 KeyEvent 直达或 Legacy 分支，
+                 * 绕过命令可用性检查。此处按键码硬拦截，无论哪条路都生效；
+                 * 返回 false 的键（播放/暂停等）交回 Media3 默认处理。
+                 *
+                 * 注意：只处理 ACTION_DOWN 且 repeatCount=0（长按连发会
+                 * 一次切多首）。
+                 */
+                override fun onMediaButtonEvent(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    intent: android.content.Intent
+                ): Boolean {
+                    val keyEvent = intent.getParcelableExtra<android.view.KeyEvent>(
+                        android.content.Intent.EXTRA_KEY_EVENT
+                    ) ?: return super.onMediaButtonEvent(session, controller, intent)
+                    if (keyEvent.action != android.view.KeyEvent.ACTION_DOWN ||
+                        keyEvent.repeatCount > 0
+                    ) {
+                        // ACTION_UP / 长按连发：吞掉避免重复触发（DOWN 已处理）
+                        return keyEvent.action != android.view.KeyEvent.ACTION_DOWN
+                    }
+                    return when (keyEvent.keyCode) {
+                        android.view.KeyEvent.KEYCODE_MEDIA_NEXT,
+                        android.view.KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD,
+                        android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+                            PlayerManager.next(); true
+                        }
+                        android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                        android.view.KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD,
+                        android.view.KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                            PlayerManager.previous(); true
+                        }
+                        else -> super.onMediaButtonEvent(session, controller, intent)
+                    }
                 }
             })
             .build()
@@ -224,17 +293,27 @@ class PlaybackService : MediaSessionService() {
                 }.getOrNull()
             } else {
                 val cacheKey = "${song.source}:${song.picId.ifBlank { song.id }}"
+                // v1.4.25：URL 优先走磁盘持久化（Store.onlineCoverUrl）——
+                // 冷启动不再依赖 API 解析；磁盘没有才调 API 并写盘
+                val cachedUrl = Store.onlineCoverUrl(song)
+                if (cachedUrl != null) {
+                    com.solara.music.ui.components.CoverCache.put(cacheKey, cachedUrl)
+                    bitmap = runCatching { downloadBitmap(cachedUrl) }.getOrNull()
+                }
                 // 最多 3 次尝试（间隔 2s）：冷启动时网络可能尚未就绪
-                repeat(3) { attempt ->
-                    bitmap = runCatching {
-                        val url = com.solara.music.ui.components.CoverCache.get(cacheKey)
-                            ?: com.solara.music.data.MusicApi.fetchPicUrl(song)?.also {
-                                com.solara.music.ui.components.CoverCache.put(cacheKey, it)
-                            }
-                        url?.let { u -> downloadBitmap(u) }
-                    }.getOrNull()
-                    if (bitmap != null) return@repeat
-                    if (attempt < 2) kotlinx.coroutines.delay(2000)
+                if (bitmap == null) {
+                    repeat(3) { attempt ->
+                        bitmap = runCatching {
+                            val url = com.solara.music.ui.components.CoverCache.get(cacheKey)
+                                ?: com.solara.music.data.MusicApi.fetchPicUrl(song)?.also {
+                                    com.solara.music.ui.components.CoverCache.put(cacheKey, it)
+                                    Store.saveOnlineCoverUrl(song, it)
+                                }
+                            url?.let { u -> downloadBitmap(u) }
+                        }.getOrNull()
+                        if (bitmap != null) return@repeat
+                        if (attempt < 2) kotlinx.coroutines.delay(2000)
+                    }
                 }
             }
             val scaled = bitmap?.let { scaleForNotification(it) }
@@ -372,6 +451,82 @@ class PlaybackService : MediaSessionService() {
         const val ACTION_NEXT = "com.solara.music.action.NEXT"
         const val ACTION_FAVORITE = "com.solara.music.action.FAVORITE"
         const val ACTION_STOP_EXIT = "com.solara.music.action.STOP_EXIT"
+    }
+}
+
+/**
+ * v1.4.24/25：切歌命令转发包装器（Media3 官方推荐做法）。
+ *
+ * 背景：本 App 队列由 PlayerManager 应用层管理，ExoPlayer 时间线只装当前
+ * 一首（setMediaItem 单首加载）→ hasNextMediaItem() 恒为 false → Media3
+ * 判定 SEEK_TO_NEXT/SEEK_TO_PREVIOUS 命令不可用 → 蓝牙耳机（AVRCP）和
+ * 系统媒体面板的切歌键被系统静默丢弃。通知栏按钮走自建 PendingIntent
+ * 不受影响，蓝牙却完全无法切歌——这就是"蓝牙上一首/下一首无法控制"的根因。
+ *
+ * 方案：包装 player 传给 MediaSession——
+ * 1. isCommandAvailable + getAvailableCommands：队列非空时对外宣称切歌
+ *    命令可用，系统才会下发（部分蓝牙栈/系统面板按命令集合判断）；
+ * 2. seekToNext/seekToPrevious/seekToNextMediaItem/seekToPreviousMediaItem：
+ *    转发给 PlayerManager.next()/previous()（应用层队列含循环/随机/单曲
+ *    循环逻辑），不再透传给内层 player；
+ * 3. v1.4.25：seekForward/seekBack 也转发切歌——部分蓝牙耳机"下一首"
+ *    发的是 AVRCP FORWARD，Android 映射为 KEYCODE_MEDIA_FAST_FORWARD
+ *    （87=NEXT 的兄弟键 90/89），走 seekForward 命令；ExoPlayer 默认
+ *    seekForward 是无操作（无 seekBack/ForwardIncrement 配置），表现为
+ *    "上一首好了、下一首没反应"的不对称症状；
+ * 4. 其余命令全部透传，播放/暂停/进度条等行为不变。
+ *
+ * 注意：PlayerManager 持有的仍是原始 ExoPlayer（attachPlayer 在包装前
+ * 注入），播放逻辑零改动；本包装器只影响"系统侧看到的 player"。
+ */
+private class QueueForwardingPlayer(player: Player) : ForwardingPlayer(player) {
+
+    /** 应用层队列非空即允许切歌（含循环模式，永远有上/下一首）。 */
+    private fun queueReady(): Boolean = PlayerManager.queue.value.isNotEmpty()
+
+    override fun isCommandAvailable(command: Int): Boolean {
+        return when (command) {
+            COMMAND_SEEK_TO_NEXT, COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+            COMMAND_SEEK_TO_PREVIOUS, COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+            COMMAND_SEEK_FORWARD, COMMAND_SEEK_BACK -> queueReady()
+            else -> super.isCommandAvailable(command)
+        }
+    }
+
+    override fun getAvailableCommands(): Player.Commands {
+        val base = super.getAvailableCommands()
+        return if (!queueReady()) base else base.buildUpon()
+            .add(COMMAND_SEEK_TO_NEXT)
+            .add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+            .add(COMMAND_SEEK_TO_PREVIOUS)
+            .add(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+            .add(COMMAND_SEEK_FORWARD)
+            .add(COMMAND_SEEK_BACK)
+            .build()
+    }
+
+    override fun seekToNext() {
+        if (queueReady()) PlayerManager.next() else super.seekToNext()
+    }
+
+    override fun seekToPrevious() {
+        if (queueReady()) PlayerManager.previous() else super.seekToPrevious()
+    }
+
+    override fun seekToNextMediaItem() {
+        if (queueReady()) PlayerManager.next() else super.seekToNextMediaItem()
+    }
+
+    override fun seekToPreviousMediaItem() {
+        if (queueReady()) PlayerManager.previous() else super.seekToPreviousMediaItem()
+    }
+
+    override fun seekForward() {
+        if (queueReady()) PlayerManager.next() else super.seekForward()
+    }
+
+    override fun seekBack() {
+        if (queueReady()) PlayerManager.previous() else super.seekBack()
     }
 }
 

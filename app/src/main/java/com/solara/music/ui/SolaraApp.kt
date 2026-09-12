@@ -293,7 +293,8 @@ fun SolaraApp() {
                     )
                     MePage.LOCAL_SONGS.name -> LocalSongsScreen(
                         onBack = { mePage = null },
-                        onAddToPlaylist = { playlistTarget = it }
+                        onAddToPlaylist = { playlistTarget = it },
+                        onShowMessage = showMessage
                     )
                     MePage.ABOUT.name -> AboutScreen(onBack = { mePage = null })
                     else -> SettingsScreen()
@@ -314,11 +315,13 @@ fun SolaraApp() {
                     )
                     2 -> LibraryScreen(
                         onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it }
+                        onDownload = { downloadTarget = it },
+                        onShowMessage = showMessage
                     )
                     3 -> RecentScreen(
                         onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it }
+                        onDownload = { downloadTarget = it },
+                        onShowMessage = showMessage
                     )
                     else -> ExploreScreen(
                         vm = exploreVm,

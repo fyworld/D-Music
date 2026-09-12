@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
@@ -48,10 +49,13 @@ import androidx.compose.ui.unit.dp
 import com.solara.music.data.Playlist
 import com.solara.music.data.Store
 import com.solara.music.player.PlayerManager
+import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.EmptyState
+import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
 import com.solara.music.ui.components.dragReorder
 import com.solara.music.ui.components.rememberDragReorderState
+import com.solara.music.ui.components.rememberMultiSelectState
 
 /**
  * 歌单主页：自建歌单列表。
@@ -59,7 +63,8 @@ import com.solara.music.ui.components.rememberDragReorderState
 @Composable
 fun PlaylistsScreen(
     onAddToPlaylist: (com.solara.music.data.Song) -> Unit = {},
-    onDownload: (com.solara.music.data.Song) -> Unit = {}
+    onDownload: (com.solara.music.data.Song) -> Unit = {},
+    onShowMessage: (String) -> Unit = {}
 ) {
     val playlists by Store.playlists.collectAsState()
     var openPlaylistId by remember { mutableStateOf<String?>(null) }
@@ -71,6 +76,7 @@ fun PlaylistsScreen(
             playlist = open,
             onAddToPlaylist = onAddToPlaylist,
             onDownload = onDownload,
+            onShowMessage = onShowMessage,
             onBack = { openPlaylistId = null }
         )
         return
@@ -155,30 +161,33 @@ private fun PlaylistCard(playlist: Playlist, onClick: () -> Unit) {
                 tint = MaterialTheme.colorScheme.onPrimaryContainer
             )
         }
+        // v1.4.26：歌曲数量放歌单名称后面（同一行）
         Column(
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = 12.dp)
         ) {
-            Text(
-                text = playlist.name,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = "${playlist.songs.size} 首",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = playlist.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "（${playlist.songs.size} 首）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
         }
     }
 }
 
 /**
- * 歌单详情：歌曲列表 + 播放全部 + 重命名/删除。
+ * 歌单详情：歌曲列表 + 播放全部 + 重命名/删除 + 多选批量操作（v1.4.26）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -186,6 +195,7 @@ private fun PlaylistDetailScreen(
     playlist: Playlist,
     onAddToPlaylist: (com.solara.music.data.Song) -> Unit,
     onDownload: (com.solara.music.data.Song) -> Unit,
+    onShowMessage: (String) -> Unit,
     onBack: () -> Unit
 ) {
     val favorites by Store.favorites.collectAsState()
@@ -193,9 +203,18 @@ private fun PlaylistDetailScreen(
     var showRename by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+    // v1.4.26：多选批量（收藏 / 加入歌单 / 移出歌单）
+    val select = rememberMultiSelectState()
+    var showBatchPlaylist by remember { mutableStateOf(false) }
+    var showBatchRemoveConfirm by remember { mutableStateOf(false) }
 
     val dragState = rememberDragReorderState(listState) { from, to ->
         Store.movePlaylistSong(playlist.id, from, to)
+    }
+
+    // v1.4.26：多选模式下按系统返回键 = 退出多选（而不是退出 App）
+    androidx.activity.compose.BackHandler(enabled = select.active) {
+        select.exit()
     }
 
     Column(
@@ -208,54 +227,94 @@ private fun PlaylistDetailScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-            }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = playlist.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+            if (select.active) {
+                // v1.4.26：多选顶栏替换标题行
+                SelectionTopBar(
+                    selectedCount = select.selected.size,
+                    totalCount = playlist.songs.size,
+                    onExit = { select.exit() },
+                    onToggleSelectAll = {
+                        if (select.selected.size >= playlist.songs.size) {
+                            select.clearSelection()
+                        } else {
+                            select.selectAll(playlist.songs)
+                        }
+                    },
+                    onFavorite = {
+                        val added = Store.addFavorites(select.selectedSongs(playlist.songs))
+                        onShowMessage("已收藏 $added 首（重复自动跳过）")
+                    },
+                    onAddToPlaylist = {
+                        if (select.selected.isNotEmpty()) showBatchPlaylist = true
+                    },
+                    onDelete = {
+                        if (select.selected.isNotEmpty()) showBatchRemoveConfirm = true
+                    }
                 )
-                Text(
-                    text = "${playlist.songs.size} 首",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Box {
-                IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "更多")
+            } else {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                 }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("播放全部") },
-                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, null) },
-                        onClick = {
-                            menuOpen = false
-                            if (playlist.songs.isNotEmpty()) {
-                                PlayerManager.setQueue(playlist.songs, 0)
+                Column(Modifier.weight(1f)) {
+                    // v1.4.26：歌曲数量放歌单名称后面（同一行），不再放名称下方
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = playlist.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "（${playlist.songs.size} 首）",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp)
+                        )
+                    }
+                }
+                Box(modifier = Modifier.padding(end = 12.dp)) {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "更多")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        // v1.4.26：多选收进更多菜单
+                        DropdownMenuItem(
+                            text = { Text("多选") },
+                            leadingIcon = { Icon(Icons.Filled.Checklist, null) },
+                            enabled = playlist.songs.isNotEmpty(),
+                            onClick = {
+                                menuOpen = false
+                                select.enter()
                             }
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("重命名") },
-                        leadingIcon = { Icon(Icons.Filled.DriveFileRenameOutline, null) },
-                        onClick = {
-                            menuOpen = false
-                            showRename = true
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("删除歌单") },
-                        leadingIcon = { Icon(Icons.Filled.Delete, null) },
-                        onClick = {
-                            menuOpen = false
-                            showDeleteConfirm = true
-                        }
-                    )
+                        )
+                        DropdownMenuItem(
+                            text = { Text("播放全部") },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, null) },
+                            onClick = {
+                                menuOpen = false
+                                if (playlist.songs.isNotEmpty()) {
+                                    PlayerManager.setQueue(playlist.songs, 0)
+                                }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("重命名") },
+                            leadingIcon = { Icon(Icons.Filled.DriveFileRenameOutline, null) },
+                            onClick = {
+                                menuOpen = false
+                                showRename = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("删除歌单") },
+                            leadingIcon = { Icon(Icons.Filled.Delete, null) },
+                            onClick = {
+                                menuOpen = false
+                                showDeleteConfirm = true
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -280,7 +339,10 @@ private fun PlaylistDetailScreen(
                         onAddToPlaylist = { onAddToPlaylist(song) },
                         onRemove = { Store.removeFromPlaylist(playlist.id, song) },
                         onDownload = { onDownload(song) },
-                        modifier = Modifier.dragReorder(dragState, i)
+                        selectionMode = select.active,
+                        selected = select.isSelected(song),
+                        onSelect = { select.toggle(song) },
+                        modifier = if (select.active) Modifier else Modifier.dragReorder(dragState, i)
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }
@@ -315,6 +377,40 @@ private fun PlaylistDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // v1.4.26：批量加入歌单
+    if (showBatchPlaylist) {
+        AddSongsToPlaylistSheet(
+            songs = select.selectedSongs(playlist.songs),
+            onDismiss = { showBatchPlaylist = false },
+            onDone = { name ->
+                onShowMessage("已加入歌单「$name」")
+                select.exit()
+            }
+        )
+    }
+
+    // v1.4.26：批量移出歌单确认
+    if (showBatchRemoveConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBatchRemoveConfirm = false },
+            title = { Text("移出歌单") },
+            text = { Text("确定把所选的 ${select.selected.size} 首歌曲移出「${playlist.name}」？不会影响收藏。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val removed = Store.removeFromPlaylist(
+                        playlist.id, select.selectedSongs(playlist.songs)
+                    )
+                    showBatchRemoveConfirm = false
+                    select.exit()
+                    onShowMessage("已移出 $removed 首")
+                }) { Text("移出", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchRemoveConfirm = false }) { Text("取消") }
             }
         )
     }

@@ -31,7 +31,13 @@ data class AppSettings(
     /** 探索雷达偏好的音乐风格，空则使用全部风格。 */
     val radarGenres: List<String> = emptyList(),
     /** 主题色（v1.4.13 #64）：mint/blue/purple/pink/orange/sky。 */
-    val accentColor: String = "mint"
+    val accentColor: String = "mint",
+    /**
+     * 播放缓存上限（字节，v1.4.25）：在线歌曲边播边缓存到磁盘，
+     * 重听秒开零流量；LRU 自动淘汰（满了删最久没听的）。默认 30GB
+     * （约 3000 首 320k），0 = 关闭缓存。
+     */
+    val playbackCacheLimitBytes: Long = 30L * 1024 * 1024 * 1024
 )
 
 /**
@@ -61,6 +67,9 @@ object Store {
     private const val KEY_SEARCH = "search_state"
     // 本地歌曲在线匹配封面 URL 缓存（v1.4.0：文件名 → 封面直链）
     private const val KEY_LOCAL_COVERS = "local_covers"
+    // 在线歌曲封面 URL 磁盘缓存（v1.4.25：key=source:picId → 封面直链，
+    // 冷启动免 API 解析直接命中 Coil 磁盘图片缓存，离线也有封面）
+    private const val KEY_ONLINE_COVERS = "online_covers"
     // 歌词磁盘缓存（v1.4.9：key=source:id → LRC 文本，离线可读）
     private const val KEY_LYRIC_CACHE = "lyric_cache"
     // 按歌歌词偏移（v1.4.15：key=source:id → 偏移秒数，每首歌独立校准）
@@ -72,6 +81,9 @@ object Store {
 
     /** v1.4.20：最后退出时的主界面状态（tab / mePage / showPlayer）。 */
     private const val KEY_UI_STATE = "ui_state"
+
+    /** v1.4.26：播放模式（顺序播放/顺序循环/单曲循环/随机）。 */
+    private const val KEY_PLAY_MODE = "play_mode"
 
     /** 最近播放列表上限：超出裁掉最旧的。 */
     private const val RECENT_LIMIT = 300
@@ -302,6 +314,18 @@ object Store {
         MusicApi.baseUrl = next.apiBaseUrl.ifBlank { MusicApi.DEFAULT_BASE_URL }
     }
 
+    // ---------- 播放模式（v1.4.26 持久化） ----------
+
+    fun savePlayMode(mode: com.solara.music.player.PlayMode) {
+        prefs.edit().putString(KEY_PLAY_MODE, mode.name).apply()
+    }
+
+    fun readPlayMode(): com.solara.music.player.PlayMode? = runCatching {
+        prefs.getString(KEY_PLAY_MODE, null)?.let {
+            com.solara.music.player.PlayMode.valueOf(it)
+        }
+    }.getOrNull()
+
     // ---------- 收藏 ----------
 
     fun isFavorite(song: Song): Boolean = favorites.value.any { it.sameAs(song) }
@@ -319,6 +343,39 @@ object Store {
     fun removeFavorite(song: Song) {
         favorites.value = favorites.value.filterNot { it.sameAs(song) }
         writeSongs(KEY_FAVORITES, favorites.value)
+        backupAsync()
+    }
+
+    /** v1.4.26：批量移除收藏（返回实际移除数）。 */
+    fun removeFavorites(songs: List<Song>): Int {
+        if (songs.isEmpty()) return 0
+        val before = favorites.value.size
+        favorites.value = favorites.value.filterNot { f -> songs.any { it.sameAs(f) } }
+        val removed = before - favorites.value.size
+        if (removed > 0) {
+            writeSongs(KEY_FAVORITES, favorites.value)
+            backupAsync()
+        }
+        return removed
+    }
+
+    /** v1.4.26：批量收藏（跳过已收藏的，返回新收藏数）。 */
+    fun addFavorites(songs: List<Song>): Int {
+        val current = favorites.value
+        val added = songs.filter { s -> current.none { it.sameAs(s) } }
+        if (added.isNotEmpty()) {
+            favorites.value = current + added
+            writeSongs(KEY_FAVORITES, favorites.value)
+            backupAsync()
+        }
+        return added.size
+    }
+
+    /** v1.4.26：清空全部收藏。 */
+    fun clearFavorites() {
+        if (favorites.value.isEmpty()) return
+        favorites.value = emptyList()
+        writeSongs(KEY_FAVORITES, emptyList())
         backupAsync()
     }
 
@@ -430,6 +487,14 @@ object Store {
         backupAsync()
     }
 
+    /** v1.4.26：批量移除最近播放记录。 */
+    fun removeRecentBatch(songs: List<Song>) {
+        if (songs.isEmpty()) return
+        recent.value = recent.value.filterNot { r -> songs.any { it.sameAs(r) } }
+        writeSongs(KEY_RECENT, recent.value)
+        backupAsync()
+    }
+
     fun clearRecent() {
         recent.value = emptyList()
         writeSongs(KEY_RECENT, emptyList())
@@ -527,6 +592,18 @@ object Store {
         updatePlaylist(id) { it.copy(songs = it.songs.filterNot { s -> s.sameAs(song) }) }
     }
 
+    /** v1.4.26：批量移出歌单（返回实际移除数）。 */
+    fun removeFromPlaylist(id: String, songs: List<Song>): Int {
+        var removed = 0
+        updatePlaylist(id) { p ->
+            val before = p.songs.size
+            val next = p.copy(songs = p.songs.filterNot { s -> songs.any { it.sameAs(s) } })
+            removed = before - next.songs.size
+            next
+        }
+        return removed
+    }
+
     /** 歌单内歌曲手动拖动排序。 */
     fun movePlaylistSong(id: String, from: Int, to: Int): Boolean {
         var ok = false
@@ -567,6 +644,13 @@ object Store {
 
     fun removeDownload(song: Song) {
         downloads.value = downloads.value.filterNot { it.sameAs(song) }
+        writeSongs(KEY_DOWNLOADS, downloads.value)
+    }
+
+    /** v1.4.26：批量移出本地歌曲列表（仅清记录，不删除文件）。 */
+    fun removeDownloads(songs: List<Song>) {
+        if (songs.isEmpty()) return
+        downloads.value = downloads.value.filterNot { d -> songs.any { it.sameAs(d) } }
         writeSongs(KEY_DOWNLOADS, downloads.value)
     }
 
@@ -730,6 +814,38 @@ object Store {
             org.json.JSONObject(prefs.getString(KEY_LOCAL_COVERS, null) ?: "{}")
         }.getOrDefault(org.json.JSONObject())
 
+    // ---------- 在线歌曲封面 URL 磁盘缓存（v1.4.25：冷启动免 API 解析） ----------
+
+    /** 读取在线歌曲缓存过的封面 URL，无缓存返回 null。 */
+    fun onlineCoverUrl(song: Song): String? {
+        val key = "${song.source}:${song.picId.ifBlank { song.id }}"
+        return readOnlineCovers().optString(key).takeIf { it.isNotBlank() }
+    }
+
+    /** 缓存在线歌曲的封面 URL（key=source:picId）。空 URL 不存。 */
+    fun saveOnlineCoverUrl(song: Song, url: String) {
+        if (url.isBlank()) return
+        val key = "${song.source}:${song.picId.ifBlank { song.id }}"
+        val o = readOnlineCovers()
+        if (o.optString(key) == url) return
+        o.put(key, url)
+        prefs.edit().putString(KEY_ONLINE_COVERS, o.toString()).apply()
+    }
+
+    /** 清除在线歌曲缓存的封面 URL（直链过期时调用，触发重新解析）。 */
+    fun clearOnlineCoverUrl(song: Song) {
+        val key = "${song.source}:${song.picId.ifBlank { song.id }}"
+        val o = readOnlineCovers()
+        if (!o.has(key)) return
+        o.remove(key)
+        prefs.edit().putString(KEY_ONLINE_COVERS, o.toString()).apply()
+    }
+
+    private fun readOnlineCovers(): org.json.JSONObject =
+        runCatching {
+            org.json.JSONObject(prefs.getString(KEY_ONLINE_COVERS, null) ?: "{}")
+        }.getOrDefault(org.json.JSONObject())
+
     private fun migrateLocalCoverKey(old: Song, new: Song) {
         val oldName = old.id.removePrefix("local:")
         val newName = new.id.removePrefix("local:")
@@ -766,7 +882,10 @@ object Store {
             apiBaseUrl = o.optString("apiBaseUrl", MusicApi.DEFAULT_BASE_URL)
                 .ifBlank { MusicApi.DEFAULT_BASE_URL },
             radarGenres = parseRadarGenres(o),
-            accentColor = o.optString("accentColor", "mint").ifBlank { "mint" }
+            accentColor = o.optString("accentColor", "mint").ifBlank { "mint" },
+            playbackCacheLimitBytes = o.optLong(
+                "playbackCacheLimitBytes", 30L * 1024 * 1024 * 1024
+            )
         )
     }.getOrDefault(AppSettings())
 
@@ -787,6 +906,7 @@ object Store {
         put("apiBaseUrl", s.apiBaseUrl)
         put("radarGenres", JSONArray(s.radarGenres))
         put("accentColor", s.accentColor)
+        put("playbackCacheLimitBytes", s.playbackCacheLimitBytes)
     }.toString()
 
     private fun songToJson(s: Song): JSONObject = JSONObject().apply {

@@ -26,6 +26,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowRightAlt
+import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Close
@@ -46,6 +48,8 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -55,6 +59,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -79,6 +84,7 @@ import com.solara.music.data.Song
 import com.solara.music.data.Store
 import com.solara.music.data.LocalCoverExtractor
 import com.solara.music.data.TagEmbedder
+import com.solara.music.lyrics.LrcLine
 import com.solara.music.lyrics.LrcParser
 import com.solara.music.player.PlayMode
 import com.solara.music.player.PlayerManager
@@ -124,6 +130,12 @@ fun PlayerScreen(
     var position by remember { mutableStateOf(0L) }
     var duration by remember { mutableStateOf(0L) }
 
+    // ---- v1.4.25：校准模式（原常驻校准行收进更多菜单）+ 歌词编辑 ----
+    /** 校准模式：更多菜单「歌词校准」进入，显示校准行/打点工具栏，退出恢复简洁。 */
+    var calibMode by remember { mutableStateOf(false) }
+    /** 歌词编辑对话框：编辑当前歌词文本（LRC 原文或纯文本），保存后生效。 */
+    var showLyricEditor by remember { mutableStateOf(false) }
+
     // ---- v1.4.16：逐句打点模式 ----
     // 打点模式：唱到当前句时点「打点」记录此刻播放位置为该句开唱时刻，
     // 自动跳到下一句；支持撤销上一条/跳过；退出即保存。
@@ -137,13 +149,15 @@ fun PlayerScreen(
         song?.let { Store.lyricTimestampsOf(it) } ?: emptyMap()
     }
 
-    // 切歌自动退出打点模式（未保存的打点丢弃——不同歌的行索引不通用）
+    // 切歌自动退出打点/校准模式（未保存的打点丢弃——不同歌的行索引不通用）
     LaunchedEffect(song) {
         if (tappingMode) {
             tappingMode = false
             tappingMap = emptyMap()
             tappingLine = 0
         }
+        // v1.4.25：校准模式也随歌退出（校准数据按歌独立，避免误操作）
+        if (calibMode) calibMode = false
     }
 
     // 循环滑动（v1.4.3 修复：v1.4.2 的"3页+边界弹回"方案有缺陷——停稳在歌词页
@@ -154,6 +168,16 @@ fun PlayerScreen(
     val pagerState = rememberPagerState(initialPage = centerPage, pageCount = { pageCount })
     val scope = rememberCoroutineScope()
     val player = PlayerManager.playerOrNull
+
+    // v1.4.26：顶部更多菜单为封面页/歌词页共用——从封面页点「歌词校准/歌词编辑」
+    // 时自动翻到歌词页，进入校准/编辑即可直接看到歌词内容，无需再手动滑动
+    fun scrollToLyricPage() {
+        scope.launch {
+            if (pagerState.currentPage % 2 == 0) {
+                pagerState.animateScrollToPage(pagerState.currentPage + 1)
+            }
+        }
+    }
 
     // 顶部区域向下划收起：累计向下位移超过阈值即触发（向上划忽略，避免与 Pager 冲突）
     var dismissAccum by remember { mutableStateOf(0f) }
@@ -404,6 +428,39 @@ fun PlayerScreen(
                                     onDownload()
                                 }
                             )
+                            // v1.4.25：歌词校准入口（原常驻校准行收进菜单——不常用，
+                            // 收起来页面更简洁）。进入后歌词页顶部显示校准行/打点工具栏
+                            DropdownMenuItem(
+                                text = { Text(if (calibMode) "退出歌词校准" else "歌词校准") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Tune, null)
+                                },
+                                onClick = {
+                                    menuOpen = false
+                                    if (tappingMode) {
+                                        // 打点进行中：一并退出并丢弃未保存打点
+                                        tappingMode = false
+                                        tappingMap = emptyMap()
+                                        tappingLine = 0
+                                    }
+                                    calibMode = !calibMode
+                                    // v1.4.26：进入校准时自动翻到歌词页（封面页点进来的场景）
+                                    if (calibMode) scrollToLyricPage()
+                                }
+                            )
+                            // v1.4.25：歌词编辑——无歌词时自己输入，有歌词时修改文本
+                            DropdownMenuItem(
+                                text = { Text("歌词编辑") },
+                                leadingIcon = {
+                                    Icon(Icons.AutoMirrored.Filled.NoteAdd, null)
+                                },
+                                onClick = {
+                                    menuOpen = false
+                                    showLyricEditor = true
+                                    // v1.4.26：编辑保存后需要看到歌词页效果，先翻过去
+                                    scrollToLyricPage()
+                                }
+                            )
                             // v1.4.17：保存校准歌词（有校准数据时显示）——
                             // 本地歌曲嵌入文件，以后播放无需重新调整
                             if (lyrics.isNotEmpty() &&
@@ -489,6 +546,8 @@ fun PlayerScreen(
                 } else {
                     // 歌词页：整页歌词（歌名/歌手在顶栏）
                     Column(modifier = Modifier.fillMaxSize()) {
+                        // v1.4.25：校准控件收进更多菜单——仅校准模式（calibMode）
+                        // 时显示，平时歌词页顶部干净无控件
                         if (tappingMode) {
                             // ---- v1.4.16：打点模式工具栏（v1.4.17 紧凑化：单行） ----
                             Column(
@@ -545,70 +604,92 @@ fun PlayerScreen(
                                         tappingMap = emptyMap()
                                         tappingLine = 0
                                     }) { Text("完成", style = MaterialTheme.typography.labelMedium) }
-                                }
-                            }
-                        } else {
-                            // v1.4.15：校准行（贴顶栏；v1.4.17 紧凑化：六按钮单行）
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.Center,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                CompactTextButton(onClick = { adjustLyricOffset(-0.5f) }) {
-                                    Icon(
-                                        Icons.Filled.FastRewind,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(Modifier.size(2.dp))
-                                    Text("提前", style = MaterialTheme.typography.labelSmall)
-                                }
-                                Text(
-                                    text = if (lyricOffset == 0f && savedTimestamps.isEmpty()) "同步校准"
-                                    else if (savedTimestamps.isNotEmpty()) "已打点"
-                                    else "偏移 ${if (lyricOffset > 0) "+" else ""}${"%.1f".format(lyricOffset)}s",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 4.dp)
-                                )
-                                CompactTextButton(onClick = { adjustLyricOffset(0.5f) }) {
-                                    Text("延后", style = MaterialTheme.typography.labelSmall)
-                                    Spacer(Modifier.size(2.dp))
-                                    Icon(
-                                        Icons.Filled.FastForward,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                                if (lyricOffset != 0f) {
-                                    CompactTextButton(onClick = { adjustLyricOffset(0f, reset = true) }) {
-                                        Text("重置", style = MaterialTheme.typography.labelSmall)
-                                    }
-                                }
-                                // v1.4.16：逐句打点入口（偏移救不了的歌词用这个）
-                                CompactTextButton(onClick = {
-                                    if (lyrics.isNotEmpty()) {
+                                    // v1.4.25：退出打点（未保存打点丢弃）
+                                    CompactTextButton(onClick = {
+                                        tappingMode = false
                                         tappingMap = emptyMap()
                                         tappingLine = 0
-                                        tappingMode = true
-                                    }
-                                }) {
-                                    Icon(
-                                        Icons.Filled.TouchApp,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(Modifier.size(2.dp))
-                                    Text("打点", style = MaterialTheme.typography.labelSmall)
+                                    }) { Text("退出", style = MaterialTheme.typography.labelMedium) }
                                 }
-                                // 已有打点数据时可清除（恢复 LRC 原时间轴 + 偏移）
-                                if (savedTimestamps.isNotEmpty()) {
-                                    CompactTextButton(onClick = {
-                                        song?.let { Store.saveLyricTimestamps(it, emptyMap()) }
-                                        timestampsTick++
-                                    }) {
-                                        Text("清打点", style = MaterialTheme.typography.labelSmall)
+                            }
+                        } else if (calibMode) {
+                            // ---- v1.4.25：校准模式工具栏（原 v1.4.15 常驻校准行迁移至此） ----
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CompactTextButton(onClick = { adjustLyricOffset(-0.5f) }) {
+                                        Icon(
+                                            Icons.Filled.FastRewind,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(Modifier.size(2.dp))
+                                        Text("提前", style = MaterialTheme.typography.labelSmall)
                                     }
+                                    Text(
+                                        text = if (lyricOffset == 0f && savedTimestamps.isEmpty()) "同步校准"
+                                        else if (savedTimestamps.isNotEmpty()) "已打点"
+                                        else "偏移 ${if (lyricOffset > 0) "+" else ""}${"%.1f".format(lyricOffset)}s",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 4.dp)
+                                    )
+                                    CompactTextButton(onClick = { adjustLyricOffset(0.5f) }) {
+                                        Text("延后", style = MaterialTheme.typography.labelSmall)
+                                        Spacer(Modifier.size(2.dp))
+                                        Icon(
+                                            Icons.Filled.FastForward,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                    if (lyricOffset != 0f) {
+                                        CompactTextButton(onClick = { adjustLyricOffset(0f, reset = true) }) {
+                                            Text("重置", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                    // v1.4.16：逐句打点入口（偏移救不了的歌词用这个）
+                                    CompactTextButton(onClick = {
+                                        if (lyrics.isNotEmpty()) {
+                                            tappingMap = emptyMap()
+                                            tappingLine = 0
+                                            tappingMode = true
+                                        }
+                                    }) {
+                                        Icon(
+                                            Icons.Filled.TouchApp,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(Modifier.size(2.dp))
+                                        Text("打点", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    // 已有打点数据时可清除（恢复 LRC 原时间轴 + 偏移）
+                                    if (savedTimestamps.isNotEmpty()) {
+                                        CompactTextButton(onClick = {
+                                            song?.let { Store.saveLyricTimestamps(it, emptyMap()) }
+                                            timestampsTick++
+                                        }) {
+                                            Text("清打点", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = "调好偏移或打点后，用「保存校准歌词」固化；完成点「退出校准」",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                TextButton(onClick = { calibMode = false }) {
+                                    Text("退出校准", style = MaterialTheme.typography.labelMedium)
                                 }
                             }
                         }
@@ -723,7 +804,10 @@ fun PlayerScreen(
                 ) {
                     Icon(
                         imageVector = when (playMode) {
-                            PlayMode.SEQUENCE -> Icons.Filled.Repeat
+                            // 顺序播放：播完即停（不循环）——箭头单向往右
+                            PlayMode.SEQUENCE -> Icons.AutoMirrored.Filled.ArrowRightAlt
+                            // 顺序循环：播完最后一首绕回第一首
+                            PlayMode.LIST_LOOP -> Icons.Filled.Repeat
                             PlayMode.REPEAT_ONE -> Icons.Filled.RepeatOne
                             PlayMode.SHUFFLE -> Icons.Filled.Shuffle
                         },
@@ -788,6 +872,20 @@ fun PlayerScreen(
                 onRemove = { PlayerManager.removeAt(it) }
             )
         }
+    }
+
+    // ---- v1.4.25：歌词编辑对话框 ----
+    if (showLyricEditor) {
+        LyricEditorDialog(
+            song = current,
+            lyrics = lyrics,
+            onDismiss = { showLyricEditor = false },
+            onSaved = {
+                // 保存后刷新显示（缓存优先级最高，立即生效）
+                vm.refreshLyrics()
+                showLyricEditor = false
+            }
+        )
     }
 }
 
@@ -891,5 +989,103 @@ private fun CompactTextButton(
             .heightIn(min = 24.dp),
         verticalAlignment = Alignment.CenterVertically,
         content = content
+    )
+}
+
+/**
+ * v1.4.25：歌词编辑对话框——无歌词时自己输入，有歌词时修改文本。
+ *
+ * - 预填当前歌词原文：优先 LRC 格式（保留时间轴，改文本不破坏同步）；
+ *   纯文本歌词（无时间轴）按行预填。
+ * - 保存：写磁盘缓存（取词优先级缓存最高）+ 本地歌嵌入文件
+ *   （MP3 USLT / FLAC 伴生 .lrc，跨播放器生效）+ 清校准数据
+ *   （行数可能变了，旧打点/偏移失效防错位）。
+ * - 纯文本（无时间标签）也能存——LrcParser 会按行生成伪时间轴，
+ *   配合「歌词校准→打点」逐句对齐后「保存校准歌词」固化成真 LRC。
+ */
+@Composable
+private fun LyricEditorDialog(
+    song: com.solara.music.data.Song?,
+    lyrics: List<LrcLine>,
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // 预填文本：有歌词按 LRC 行重建（保留时间轴）；无歌词给空
+    val initialText = remember(song) {
+        if (lyrics.isEmpty()) ""
+        else lyrics.joinToString("\n") { line ->
+            val totalMs = (line.time * 1000).toLong()
+            "[%02d:%02d.%03d]".format(
+                totalMs / 60000, totalMs / 1000 % 60, totalMs % 1000
+            ) + line.text
+        }
+    }
+    var text by remember(song) { mutableStateOf(initialText) }
+    var saving by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        title = { Text("歌词编辑") },
+        text = {
+            Column {
+                Text(
+                    text = "支持 LRC 格式（[mm:ss.xxx] 歌词）或纯文本（每行一句）。" +
+                        "纯文本保存后用「歌词校准→打点」逐句对齐。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 320.dp, max = 420.dp),
+                    placeholder = { Text("输入或粘贴歌词…") },
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val s = song ?: return@TextButton
+                    val content = text.trim()
+                    if (content.isEmpty()) return@TextButton
+                    saving = true
+                    val ctx = context.applicationContext
+                    scope.launch {
+                        val isLocal = LocalCoverExtractor.isLocalSong(s)
+                        val embedded = if (isLocal) {
+                            withContext(Dispatchers.IO) {
+                                runCatching { TagEmbedder.embedLyricInto(ctx, s, content) }
+                                    .getOrDefault(false)
+                            }
+                        } else false
+                        withContext(Dispatchers.IO) { Store.saveCachedLyric(s, content) }
+                        // 行数/内容可能变了：清校准数据防错位
+                        Store.saveLyricOffset(s, 0f)
+                        Store.saveLyricTimestamps(s, emptyMap())
+                        Toast.makeText(
+                            ctx,
+                            when {
+                                isLocal && embedded -> "歌词已保存并嵌入文件"
+                                isLocal -> "歌词已保存（嵌入文件失败）"
+                                else -> "歌词已保存"
+                            },
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        onSaved()
+                    }
+                },
+                enabled = !saving && text.isNotBlank()
+            ) { Text(if (saving) "保存中…" else "保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = { if (!saving) onDismiss() }) { Text("取消") }
+        }
     )
 }

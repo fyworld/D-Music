@@ -947,7 +947,10 @@ object DownloadManager {
         val song = task.song
 
         // 1) 封面字节 + 歌词文本（并行拉，失败为 null）
-        val coverUrl = MusicApi.fetchPicUrl(song)
+        // v1.4.25：封面 URL 优先走磁盘缓存（省一次 API 调用）
+        val coverUrl = Store.onlineCoverUrl(song) ?: MusicApi.fetchPicUrl(song)?.also {
+            Store.saveOnlineCoverUrl(song, it)
+        }
         val coverBytes: ByteArray? = coverUrl?.let { u ->
             runCatching {
                 client.newCall(Request.Builder().url(u).build()).execute().use { r ->

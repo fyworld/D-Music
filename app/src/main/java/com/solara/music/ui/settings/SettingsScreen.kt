@@ -34,6 +34,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,6 +55,10 @@ import com.solara.music.data.Qualities
 import com.solara.music.data.Store
 import com.solara.music.data.ThemeMode
 import com.solara.music.ui.theme.AccentPalettes
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen() {
@@ -268,6 +273,66 @@ fun SettingsScreen() {
                 },
                 enabled = !hasAllFilesAccess
             ) { Text(if (hasAllFilesAccess) "已开启" else "去开启") }
+        }
+
+        // v1.4.25：播放缓存管理——在线歌曲边播边缓存，重听秒开零流量
+        SettingsCard(title = "播放缓存") {
+            val cacheLimit = settings.playbackCacheLimitBytes
+            var cacheSize by remember { mutableStateOf(-1L) }
+            var cacheCount by remember { mutableStateOf(-1) }
+            var clearing by remember { mutableStateOf(false) }
+            // 进入设置页/清空后刷新统计
+            LaunchedEffect(Unit, clearing) {
+                if (!clearing) {
+                    withContext(Dispatchers.IO) {
+                        cacheSize = com.solara.music.player.PlaybackCache.cacheSize()
+                        cacheCount = com.solara.music.player.PlaybackCache.count()
+                    }
+                }
+            }
+            fun formatSize(bytes: Long): String = when {
+                bytes < 0 -> "统计中…"
+                bytes >= 1L shl 30 -> "%.1f GB".format(bytes.toDouble() / (1L shl 30))
+                bytes >= 1L shl 20 -> "%.1f MB".format(bytes.toDouble() / (1L shl 20))
+                else -> "%.0f KB".format(bytes.toDouble() / (1L shl 10))
+            }
+            Text(
+                text = if (cacheLimit <= 0) "已关闭：在线歌曲直接联网播放，不缓存到本地。"
+                else "在线歌曲边播边缓存到本地，重听时秒开且不耗流量。" +
+                    "缓存已用 ${formatSize(cacheSize)}（${if (cacheCount < 0) "…" else "$cacheCount 首"}），" +
+                    "上限 ${formatSize(cacheLimit)}，满了自动删最久没听的。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 上限档位：关 / 10G / 30G / 50G（30G ≈ 3000 首 320k，默认）
+                listOf(
+                    0L to "关闭",
+                    10L shl 30 to "10GB",
+                    30L shl 30 to "30GB",
+                    50L shl 30 to "50GB"
+                ).forEach { (limit, label) ->
+                    FilterChip(
+                        selected = cacheLimit == limit,
+                        onClick = {
+                            Store.updateSettings { it.copy(playbackCacheLimitBytes = limit) }
+                            com.solara.music.player.PlaybackCache.applyLimit(context, limit)
+                        },
+                        label = { Text(label) }
+                    )                }
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    clearing = true
+                    CoroutineScope(Dispatchers.IO).launch {
+                        com.solara.music.player.PlaybackCache.clear()
+                        clearing = false
+                    }
+                },
+                enabled = !clearing && cacheLimit > 0
+            ) { Text(if (clearing) "清空中…" else "清空播放缓存") }
         }
 
         // 底部版本信息

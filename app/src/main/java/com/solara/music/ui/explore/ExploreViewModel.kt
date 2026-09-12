@@ -66,6 +66,13 @@ class ExploreViewModel : ViewModel() {
         persist()
     }
 
+    /** v1.4.26：批量从探索结果移除。 */
+    fun removeResults(songs: List<Song>) {
+        if (songs.isEmpty()) return
+        results.value = results.value.filterNot { r -> songs.any { it.sameAs(r) } }
+        persist()
+    }
+
     /** 随机挑选风格：用户勾选的偏好优先，未勾选则用全部风格。 */
     private fun pickGenre(): String {
         val pool = Store.settings.value.radarGenres

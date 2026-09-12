@@ -18,6 +18,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.ImageSearch
@@ -54,11 +56,14 @@ import com.solara.music.data.Song
 import com.solara.music.data.Store
 import com.solara.music.data.TagEmbedder
 import com.solara.music.player.PlayerManager
+import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.FolderPickerDialog
+import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
 import com.solara.music.ui.components.dragReorder
 import com.solara.music.ui.components.rememberDragReorderState
+import com.solara.music.ui.components.rememberMultiSelectState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -90,7 +95,8 @@ private data class PendingAllFiles(
 @Composable
 fun LocalSongsScreen(
     onBack: () -> Unit,
-    onAddToPlaylist: (Song) -> Unit = {}
+    onAddToPlaylist: (Song) -> Unit = {},
+    onShowMessage: (String) -> Unit = {}
 ) {
     val songs by Store.downloads.collectAsState()
     val favorites by Store.favorites.collectAsState()
@@ -109,12 +115,22 @@ fun LocalSongsScreen(
     // v1.4.0：批量匹配在线封面
     var matching by remember { mutableStateOf(false) }
     var matchProgress by remember { mutableStateOf(0 to 0) } // done to total
+    // v1.4.26：多选批量（收藏 / 加入歌单 / 移出列表）
+    val select = rememberMultiSelectState()
+    var showBatchPlaylist by remember { mutableStateOf(false) }
+    var showBatchRemoveConfirm by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     val dragState = rememberDragReorderState(listState) { from, to ->
         Store.moveDownload(from, to)
+    }
+
+    // v1.4.26：多选模式下按系统返回键 = 退出多选（优先于 SolaraApp 的
+    // 子页面返回拦截——Compose BackHandler 组合树中后注册者优先）
+    androidx.activity.compose.BackHandler(enabled = select.active) {
+        select.exit()
     }
 
     /**
@@ -338,30 +354,48 @@ fun LocalSongsScreen(
             .padding(horizontal = 16.dp)
     ) {
         Spacer(Modifier.height(12.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-            }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = "本地歌曲",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "${songs.size} 首 · 长按可拖动排序",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            TextButton(
-                onClick = { PlayerManager.setQueue(songs, 0) },
-                enabled = songs.isNotEmpty()
-            ) { Text("播放全部") }
-            Box {
+        if (select.active) {
+            // v1.4.26：多选模式顶栏（收藏 / 加入歌单 / 移出列表）
+            SelectionTopBar(
+                selectedCount = select.selected.size,
+                totalCount = songs.size,
+                onExit = { select.exit() },
+                onToggleSelectAll = {
+                    if (select.selected.size >= songs.size) select.clearSelection()
+                    else select.selectAll(songs)
+                },
+                onFavorite = {
+                    val added = Store.addFavorites(select.selectedSongs(songs))
+                    onShowMessage("已收藏 $added 首（重复自动跳过）")
+                },
+                onAddToPlaylist = {
+                    if (select.selected.isNotEmpty()) showBatchPlaylist = true
+                },
+                onDelete = {
+                    if (select.selected.isNotEmpty()) showBatchRemoveConfirm = true
+                }
+            )
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "本地歌曲",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = "${songs.size} 首 · 长按可拖动排序",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Box(modifier = Modifier.padding(end = 12.dp)) {
                 IconButton(onClick = { menuOpen = true }) {
                     Icon(Icons.Filled.MoreVert, contentDescription = "更多")
                 }
@@ -369,6 +403,26 @@ fun LocalSongsScreen(
                     expanded = menuOpen,
                     onDismissRequest = { menuOpen = false }
                 ) {
+                    // v1.4.26：多选收进更多菜单
+                    DropdownMenuItem(
+                        text = { Text("多选") },
+                        leadingIcon = { Icon(Icons.Filled.Checklist, contentDescription = null) },
+                        enabled = songs.isNotEmpty(),
+                        onClick = {
+                            menuOpen = false
+                            select.enter()
+                        }
+                    )
+                    // v1.4.26：播放全部收进更多菜单
+                    DropdownMenuItem(
+                        text = { Text("播放全部") },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null) },
+                        enabled = songs.isNotEmpty(),
+                        onClick = {
+                            menuOpen = false
+                            PlayerManager.setQueue(songs, 0)
+                        }
+                    )
                     DropdownMenuItem(
                         text = { Text(if (scanning) "扫描中…" else "扫描本地歌曲") },
                         leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
@@ -415,6 +469,7 @@ fun LocalSongsScreen(
                         }
                     )
                 }
+                }
             }
         }
 
@@ -448,7 +503,10 @@ fun LocalSongsScreen(
                         onAddToPlaylist = { onAddToPlaylist(song) },
                         onRemove = { pendingDelete = song },
                         onRename = { pendingRename = song },
-                        modifier = Modifier.dragReorder(dragState, i)
+                        selectionMode = select.active,
+                        selected = select.isSelected(song),
+                        onSelect = { select.toggle(song) },
+                        modifier = if (select.active) Modifier else Modifier.dragReorder(dragState, i)
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }
@@ -718,6 +776,43 @@ fun LocalSongsScreen(
                         }
                     }
                 }) { Text("仅此一次") }
+            }
+        )
+    }
+
+    // v1.4.26：多选批量加入歌单
+    if (showBatchPlaylist) {
+        AddSongsToPlaylistSheet(
+            songs = select.selectedSongs(songs),
+            onDismiss = { showBatchPlaylist = false },
+            onDone = { name ->
+                onShowMessage("已加入歌单「$name」")
+                select.exit()
+            }
+        )
+    }
+
+    // v1.4.26：批量移出列表确认（仅清记录，不删除文件；删文件走单曲菜单）
+    if (showBatchRemoveConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBatchRemoveConfirm = false },
+            title = { Text("移出本地歌曲列表") },
+            text = {
+                Text(
+                    "将所选的 ${select.selected.size} 首歌曲移出列表（仅清除记录，不删除手机里的音频文件）。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val n = select.selected.size
+                    Store.removeDownloads(select.selectedSongs(songs))
+                    showBatchRemoveConfirm = false
+                    select.exit()
+                    onShowMessage("已移出 $n 首（文件未删除）")
+                }) { Text("移出", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchRemoveConfirm = false }) { Text("取消") }
             }
         )
     }

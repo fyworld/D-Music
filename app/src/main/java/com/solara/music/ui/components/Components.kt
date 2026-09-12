@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -55,6 +57,7 @@ import coil.compose.AsyncImage
 import com.solara.music.data.LocalCoverExtractor
 import com.solara.music.data.MusicApi
 import com.solara.music.data.Song
+import com.solara.music.data.Store
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -102,11 +105,17 @@ fun CoverImage(song: Song?, size: Dp, corner: Dp = 10.dp) {
     val coverRev by LocalCoverExtractor.revision.collectAsState()
 
     // 在线：封面 URL 缓存
+    // v1.4.25：先读磁盘持久化（Store.onlineCoverUrl）——冷启动不再每首歌
+    // 联网调 API 解析 URL，直接命中 Coil 磁盘图片缓存，离线也有封面；
+    // 磁盘没有才调 API，拿到后写盘供下次使用
     var url by remember(song?.source, song?.picId, song?.id) {
         val s = song
         mutableStateOf(
             if (s != null && !isLocal) {
                 CoverCache.get("${s.source}:${s.picId.ifBlank { s.id }}")
+                    ?: Store.onlineCoverUrl(s)?.also {
+                        CoverCache.put("${s.source}:${s.picId.ifBlank { s.id }}", it)
+                    }
             } else null
         )
     }
@@ -146,7 +155,35 @@ fun CoverImage(song: Song?, size: Dp, corner: Dp = 10.dp) {
             if (fetched != null) {
                 val key = "${song.source}:${song.picId.ifBlank { song.id }}"
                 CoverCache.put(key, fetched)
+                // v1.4.25：URL 写盘持久化——下次冷启动免 API 解析
+                withContext(Dispatchers.IO) { Store.saveOnlineCoverUrl(song, fetched) }
                 url = fetched
+            }
+        }
+    }
+
+    // v1.4.25：磁盘缓存的 URL 可能过期（CDN 直链时效）——Coil 加载失败时
+    // 清掉内存+磁盘缓存，重新走 API 解析拿新 URL 再试一次（每首歌最多一次，防循环）
+    var retryUrl by remember(song?.source, song?.id) { mutableStateOf<String?>(null) }
+    var hasRetried by remember(song?.source, song?.id) { mutableStateOf(false) }
+    if (!isLocal && song != null) {
+        LaunchedEffect(retryUrl) {
+            if (retryUrl == null) return@LaunchedEffect
+            val old = retryUrl
+            retryUrl = null
+            val key = "${song.source}:${song.picId.ifBlank { song.id }}"
+            CoverCache.remove(key)
+            withContext(Dispatchers.IO) { Store.clearOnlineCoverUrl(song) }
+            val fresh = withContext(Dispatchers.IO) {
+                runCatching { MusicApi.fetchPicUrl(song) }.getOrNull()
+            }
+            if (fresh != null && fresh != old) {
+                CoverCache.put(key, fresh)
+                withContext(Dispatchers.IO) { Store.saveOnlineCoverUrl(song, fresh) }
+                url = fresh
+            } else if (fresh != null && fresh == old) {
+                // 同一 URL（可能只是网络抖动）：放回缓存，交给 Coil 自身重试
+                CoverCache.put(key, fresh)
             }
         }
     }
@@ -170,7 +207,16 @@ fun CoverImage(song: Song?, size: Dp, corner: Dp = 10.dp) {
                 model = url,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                // v1.4.25：加载失败（URL 过期/网络断）触发一次重解析（每首歌最多一次，防循环）
+                onState = { state ->
+                    if (state is coil.compose.AsyncImagePainter.State.Error &&
+                        song != null && !isLocal && !hasRetried
+                    ) {
+                        hasRetried = true
+                        retryUrl = url
+                    }
+                }
             )
             else -> Icon(
                 imageVector = Icons.Filled.MusicNote,
@@ -189,11 +235,16 @@ internal object CoverCache {
         if (map.size > 300) map.clear()
         map[key] = value
     }
+    fun remove(key: String) {
+        map.remove(key)
+    }
 }
 
 /**
  * 歌曲行：封面 + 标题/歌手 + 收藏/更多操作。
  * 更多弹菜单：加入歌单、下载、移除（移除行为由所在列表定义）。
+ * v1.4.26：selectionMode=true 时切换为多选行——点击整行切换勾选，
+ * 左侧封面位置显示勾选框，隐藏收藏/更多按钮。
  */
 @Composable
 fun SongRow(
@@ -205,6 +256,9 @@ fun SongRow(
     onRemove: (() -> Unit)? = null,
     onDownload: (() -> Unit)? = null,
     onRename: (() -> Unit)? = null,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    onSelect: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -213,11 +267,27 @@ fun SongRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
+            .clickable(onClick = if (selectionMode) (onSelect ?: onClick) else onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CoverImage(song = song, size = 52.dp, corner = 12.dp)
+        if (selectionMode) {
+            // 多选模式：封面位置换成勾选框（保持行高一致）
+            Box(
+                modifier = Modifier.size(52.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                    contentDescription = if (selected) "取消选择" else "选择",
+                    tint = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        } else {
+            CoverImage(song = song, size = 52.dp, corner = 12.dp)
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -226,7 +296,8 @@ fun SongRow(
             Text(
                 text = song.displayName,
                 style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (selectionMode && selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -239,52 +310,54 @@ fun SongRow(
                 modifier = Modifier.padding(top = 2.dp)
             )
         }
-        IconButton(onClick = onToggleFavorite) {
-            Icon(
-                imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                contentDescription = if (isFavorite) "取消收藏" else "收藏",
-                tint = if (isFavorite) MaterialTheme.colorScheme.tertiary
-                else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Box {
-            IconButton(onClick = { menuOpen = true }) {
+        if (!selectionMode) {
+            IconButton(onClick = onToggleFavorite) {
                 Icon(
-                    Icons.Filled.MoreVert,
-                    contentDescription = "更多",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                    contentDescription = if (isFavorite) "取消收藏" else "收藏",
+                    tint = if (isFavorite) MaterialTheme.colorScheme.tertiary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                if (onAddToPlaylist != null) {
-                    DropdownMenuItem(
-                        text = { Text("加入歌单") },
-                        leadingIcon = {
-                            Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null)
-                        },
-                        onClick = { menuOpen = false; onAddToPlaylist() }
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = "更多",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (onDownload != null) {
-                    DropdownMenuItem(
-                        text = { Text("下载") },
-                        leadingIcon = { Icon(Icons.Filled.Download, null) },
-                        onClick = { menuOpen = false; onDownload() }
-                    )
-                }
-                if (onRename != null) {
-                    DropdownMenuItem(
-                        text = { Text("重命名") },
-                        leadingIcon = { Icon(Icons.Filled.DriveFileRenameOutline, null) },
-                        onClick = { menuOpen = false; onRename() }
-                    )
-                }
-                if (onRemove != null) {
-                    DropdownMenuItem(
-                        text = { Text("移除") },
-                        leadingIcon = { Icon(Icons.Filled.Delete, null) },
-                        onClick = { menuOpen = false; onRemove() }
-                    )
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    if (onAddToPlaylist != null) {
+                        DropdownMenuItem(
+                            text = { Text("加入歌单") },
+                            leadingIcon = {
+                                Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null)
+                            },
+                            onClick = { menuOpen = false; onAddToPlaylist() }
+                        )
+                    }
+                    if (onDownload != null) {
+                        DropdownMenuItem(
+                            text = { Text("下载") },
+                            leadingIcon = { Icon(Icons.Filled.Download, null) },
+                            onClick = { menuOpen = false; onDownload() }
+                        )
+                    }
+                    if (onRename != null) {
+                        DropdownMenuItem(
+                            text = { Text("重命名") },
+                            leadingIcon = { Icon(Icons.Filled.DriveFileRenameOutline, null) },
+                            onClick = { menuOpen = false; onRename() }
+                        )
+                    }
+                    if (onRemove != null) {
+                        DropdownMenuItem(
+                            text = { Text("移除") },
+                            leadingIcon = { Icon(Icons.Filled.Delete, null) },
+                            onClick = { menuOpen = false; onRemove() }
+                        )
+                    }
                 }
             }
         }

@@ -48,13 +48,16 @@ import androidx.compose.ui.unit.dp
 import com.solara.music.data.Sources
 import com.solara.music.data.Store
 import com.solara.music.player.PlayerManager
+import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.BatchActionBar
 import com.solara.music.ui.components.BatchDownloadDialog
 import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SaveAsPlaylistDialog
+import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
 import com.solara.music.ui.components.dragReorder
 import com.solara.music.ui.components.rememberDragReorderState
+import com.solara.music.ui.components.rememberMultiSelectState
 import com.solara.music.ui.components.saveSongsToNewPlaylist
 
 @Composable
@@ -78,9 +81,17 @@ fun SearchScreen(
     // v1.4.13 #63：批量存歌单 / 批量下载
     var showSavePlaylist by remember { mutableStateOf(false) }
     var showBatchDownload by remember { mutableStateOf(false) }
+    // v1.4.26：多选批量（收藏 / 加入歌单 / 下载 / 移除）
+    val select = rememberMultiSelectState()
+    var showBatchPlaylist by remember { mutableStateOf(false) }
 
     val dragState = rememberDragReorderState(listState) { from, to ->
         vm.moveResult(from, to)
+    }
+
+    // v1.4.26：多选模式下按系统返回键 = 退出多选（而不是退出 App）
+    androidx.activity.compose.BackHandler(enabled = select.active) {
+        select.exit()
     }
 
     Column(
@@ -184,12 +195,43 @@ fun SearchScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 item {
-                    // v1.4.17：结果数标题行 + 更多按钮（存为歌单/下载全部收进菜单）
-                    BatchActionBar(
-                        title = "搜索结果（${results.size} 首）",
-                        onSaveToPlaylist = { showSavePlaylist = true },
-                        onDownloadAll = { showBatchDownload = true }
-                    )
+                    if (select.active) {
+                        // v1.4.26：多选模式顶栏（收藏 / 加入歌单 / 下载 / 移除）
+                        SelectionTopBar(
+                            selectedCount = select.selected.size,
+                            totalCount = results.size,
+                            onExit = { select.exit() },
+                            onToggleSelectAll = {
+                                if (select.selected.size >= results.size) {
+                                    select.clearSelection()
+                                } else {
+                                    select.selectAll(results)
+                                }
+                            },
+                            onFavorite = {
+                                val added = Store.addFavorites(select.selectedSongs(results))
+                                onShowMessage("已收藏 $added 首（重复自动跳过）")
+                            },
+                            onAddToPlaylist = {
+                                if (select.selected.isNotEmpty()) showBatchPlaylist = true
+                            },
+                            onDelete = {
+                                // 搜索结果"删除"= 从结果列表移除（不动收藏）
+                                val n = select.selected.size
+                                vm.removeResults(select.selectedSongs(results))
+                                select.clearSelection()
+                                onShowMessage("已从结果移除 $n 首")
+                            }
+                        )
+                    } else {
+                        // v1.4.17：结果数标题行 + 更多按钮（存为歌单/下载全部收进菜单）
+                        BatchActionBar(
+                            title = "搜索结果（${results.size} 首）",
+                            onSaveToPlaylist = { showSavePlaylist = true },
+                            onDownloadAll = { showBatchDownload = true },
+                            onMultiSelect = { select.enter() }
+                        )
+                    }
                 }
                 items(results.size) { i ->
                     val song = results[i]
@@ -201,7 +243,10 @@ fun SearchScreen(
                         onAddToPlaylist = { onAddToPlaylist(song) },
                         onRemove = { vm.removeResult(i) },
                         onDownload = { onDownload(song) },
-                        modifier = Modifier.dragReorder(dragState, i)
+                        selectionMode = select.active,
+                        selected = select.isSelected(song),
+                        onSelect = { select.toggle(song) },
+                        modifier = if (select.active) Modifier else Modifier.dragReorder(dragState, i)
                     )
                 }
                 if (hasMore) {
@@ -257,6 +302,18 @@ fun SearchScreen(
                 results.forEach { com.solara.music.data.DownloadManager.enqueue(context, it, quality) }
                 onShowMessage("已开始下载 ${results.size} 首")
                 showBatchDownload = false
+            }
+        )
+    }
+
+    // v1.4.26：多选批量加入歌单
+    if (showBatchPlaylist) {
+        AddSongsToPlaylistSheet(
+            songs = select.selectedSongs(results),
+            onDismiss = { showBatchPlaylist = false },
+            onDone = { name ->
+                onShowMessage("已加入歌单「$name」")
+                select.exit()
             }
         )
     }

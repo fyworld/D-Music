@@ -69,6 +69,13 @@ class SearchViewModel : ViewModel() {
         persist()
     }
 
+    /** v1.4.26：批量从搜索结果移除。 */
+    fun removeResults(songs: List<Song>) {
+        if (songs.isEmpty()) return
+        results.value = results.value.filterNot { r -> songs.any { it.sameAs(r) } }
+        persist()
+    }
+
     fun search() {
         val keyword = query.value.trim()
         if (keyword.isEmpty() || isLoading.value) return

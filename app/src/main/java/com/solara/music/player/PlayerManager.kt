@@ -30,7 +30,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class PlayMode(val label: String) {
+    /** 顺序播放：按顺序播完最后一首即停止（不绕回）。 */
     SEQUENCE("顺序播放"),
+
+    /** 顺序循环：播完最后一首自动回到第一首（v1.4.26 与"顺序播放"拆分）。 */
+    LIST_LOOP("顺序循环"),
+
     REPEAT_ONE("单曲循环"),
     SHUFFLE("随机播放")
 }
@@ -64,6 +69,12 @@ object PlayerManager {
     val currentIndex = MutableStateFlow(-1)
     val isPlaying = MutableStateFlow(false)
     val playMode = MutableStateFlow(PlayMode.SEQUENCE)
+
+    /** v1.4.26：播放模式持久化（App 启动时由 SolaraApp 调 restorePlayMode）。 */
+    fun restorePlayMode() {
+        val saved = Store.readPlayMode() ?: return
+        playMode.value = saved
+    }
 
     /**
      * 播放失败事件（v1.4.13 #65）：解析失败/网络错误时发射，UI 层收集展示提示。
@@ -335,10 +346,12 @@ object PlayerManager {
 
     fun cycleMode() {
         playMode.value = when (playMode.value) {
-            PlayMode.SEQUENCE -> PlayMode.REPEAT_ONE
+            PlayMode.SEQUENCE -> PlayMode.LIST_LOOP
+            PlayMode.LIST_LOOP -> PlayMode.REPEAT_ONE
             PlayMode.REPEAT_ONE -> PlayMode.SHUFFLE
             PlayMode.SHUFFLE -> PlayMode.SEQUENCE
         }
+        Store.savePlayMode(playMode.value)
     }
 
     private fun stopPlayback(songs: List<Song>) {
@@ -368,6 +381,7 @@ object PlayerManager {
         val nextIndex = when (playMode.value) {
             PlayMode.REPEAT_ONE -> currentIndex.value
             PlayMode.SHUFFLE -> randomIndex(songs.size, currentIndex.value)
+            // 顺序播放：播完最后一首就停（手动切歌仍可绕回第一首）
             PlayMode.SEQUENCE -> {
                 val n = currentIndex.value + 1
                 if (n >= songs.size) {
@@ -380,6 +394,9 @@ object PlayerManager {
                     n
                 }
             }
+            // 顺序循环：播完最后一首自动回到第一首（v1.4.26 修复：此前
+            // 旧"顺序播放"模式在最后一首自然播完会停下，不会绕回）
+            PlayMode.LIST_LOOP -> (currentIndex.value + 1) % songs.size
         }
         playAt(nextIndex)
     }
@@ -401,8 +418,8 @@ object PlayerManager {
             val localUri = withContext(Dispatchers.IO) {
                 appContext?.let { DownloadManager.findLocalPlayableUri(it, song) }
             }
+            val quality = Store.settings.value.quality
             val url = localUri ?: run {
-                val quality = Store.settings.value.quality
                 try {
                     MusicApi.resolveUrl(song, quality)
                 } catch (e: Exception) {
@@ -423,11 +440,16 @@ object PlayerManager {
             } else {
                 consecutiveFailures = 0
 
-                // 封面：先查内存缓存，没有就同步拉一次（系统通知需要真实 URL）
+                // 封面：内存缓存 → 磁盘持久化（v1.4.25）→ 在线解析（结果写盘）
                 val cacheKey = "${song.source}:${song.picId.ifBlank { song.id }}"
-                val coverUrl = CoverCache.get(cacheKey) ?: MusicApi.fetchPicUrl(song).also {
-                    if (it != null) CoverCache.put(cacheKey, it)
-                }
+                val coverUrl = CoverCache.get(cacheKey)
+                    ?: Store.onlineCoverUrl(song)?.also { CoverCache.put(cacheKey, it) }
+                    ?: MusicApi.fetchPicUrl(song).also {
+                        if (it != null) {
+                            CoverCache.put(cacheKey, it)
+                            Store.saveOnlineCoverUrl(song, it)
+                        }
+                    }
 
                 val metadata = MediaMetadata.Builder()
                     .setTitle(song.name)
@@ -439,6 +461,11 @@ object PlayerManager {
                     .setMediaId(song.id)
                     .setUri(url)
                     .setMediaMetadata(metadata)
+                    // v1.4.25：缓存 key 带音质（source:id:br）——重听命中磁盘
+                    // 缓存秒开零流量，切音质不串缓存
+                    .setCustomCacheKey(
+                        PlaybackCache.keyOf(song.source, song.id, quality)
+                    )
                     .build()
 
                 p.setMediaItem(item)
