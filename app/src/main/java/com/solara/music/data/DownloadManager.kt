@@ -467,29 +467,43 @@ object DownloadManager {
                 val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
                 while (cursor.moveToNext()) {
                     val name = cursor.getString(nameCol) ?: continue
-                    if (!name.endsWith(".mp3") && !name.endsWith(".flac")) continue
+                    // v1.4.28：ignoreCase——大写扩展名（.MP3）同样是合法音频
+                    if (!name.endsWith(".mp3", true) && !name.endsWith(".flac", true)) continue
                     found.add(cursor.getLong(idCol) to name)
                 }
             }
             // 优先 flac（无损），其次 mp3
-            val best = found.firstOrNull { it.second.endsWith(".flac") }
-                ?: found.firstOrNull { it.second.endsWith(".mp3") }
+            val best = found.firstOrNull { it.second.endsWith(".flac", true) }
+                ?: found.firstOrNull { it.second.endsWith(".mp3", true) }
             return best?.let {
                 ContentUris.withAppendedId(
                     MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, it.first
                 ).toString()
             }
         } else {
-            val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "D_Music")
-            // 本地扫描导入的歌曲：id 里存了原始文件名，直接精确匹配
-            if (song.source == "local" && song.id.startsWith("local:")) {
-                val fileName = song.id.removePrefix("local:")
-                val f = File(dir, fileName)
-                if (f.exists()) return Uri.fromFile(f).toString()
+            // v1.4.28：API<Q 的扫描走公共目录文件遍历（hasAllFilesAccess
+            // 恒 true，扫 Music/D_Music 等公共目录），播放解析此前只查
+            // App 专属目录——公共目录扫出的歌曲全部「本地文件已丢失」。
+            // 现在与扫描同源：App 专属目录（在线歌曲下载落盘处）+ 扫描目录
+            val dirs = mutableListOf(
+                File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "D_Music")
+            )
+            // 默认公共扫描目录 + 用户选择的自定义扫描目录都查（去重）
+            val candidates = buildList {
+                add("${Environment.DIRECTORY_MUSIC}/D_Music")
+                Store.scanFolder.value?.let { add(it) }
             }
-            listOf("flac", "mp3").forEach { ext ->
-                val f = File(dir, safe("${song.artistName} - ${song.displayName}.$ext"))
-                if (f.exists()) return Uri.fromFile(f).toString()
+            candidates.distinct().forEach { resolveScanRoot(it)?.let { d -> dirs.add(d) } }
+            for (dir in dirs) {
+                // 本地扫描导入的歌曲：id 里存了原始文件名，直接精确匹配
+                if (song.source == "local" && song.id.startsWith("local:")) {
+                    val f = File(dir, song.id.removePrefix("local:"))
+                    if (f.exists()) return Uri.fromFile(f).toString()
+                }
+                listOf("flac", "mp3").forEach { ext ->
+                    val f = File(dir, safe("${song.artistName} - ${song.displayName}.$ext"))
+                    if (f.exists()) return Uri.fromFile(f).toString()
+                }
             }
             return null
         }
@@ -549,8 +563,14 @@ object DownloadManager {
                     .filter { it.isFile && it.extension.lowercase() in AUDIO_EXTS }
                     .filter { !it.absolutePath.contains("/D_Music_Backup/") }
                     .sortedBy { it.name.lowercase() }
+                    // v1.4.28：putIfAbsent 会保留旧版大写扩展名解析损坏的
+                    // 记录（歌名残留 .MP3）——同名文件用正确解析结果替换修复
                     .forEach { f -> songFromFileName(f.name)?.let {
-                        result.putIfAbsent("local:${it.id}", it)
+                        val key = "local:${it.id}"
+                        val old = result[key]
+                        if (old == null || old.name != it.name || old.artist != it.artist) {
+                            result[key] = it
+                        }
                     } }
             }
             return result.values.toList()
@@ -599,7 +619,14 @@ object DownloadManager {
                 val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
                 while (cursor.moveToNext()) {
                     val name = cursor.getString(nameCol) ?: continue
-                    songFromFileName(name)?.let { result.putIfAbsent("local:${it.id}", it) }
+                    // v1.4.28：同名文件用正确解析结果替换旧损坏记录（同上）
+                    songFromFileName(name)?.let {
+                        val key = "local:${it.id}"
+                        val old = result[key]
+                        if (old == null || old.name != it.name || old.artist != it.artist) {
+                            result[key] = it
+                        }
+                    }
                 }
             }
         } else {
@@ -607,7 +634,11 @@ object DownloadManager {
             if (dir.exists()) {
                 dir.listFiles()?.forEach { f ->
                     if (f.isFile) songFromFileName(f.name)?.let {
-                        result.putIfAbsent("local:${it.id}", it)
+                        val key = "local:${it.id}"
+                        val old = result[key]
+                        if (old == null || old.name != it.name || old.artist != it.artist) {
+                            result[key] = it
+                        }
                     }
                 }
             }
@@ -662,11 +693,14 @@ object DownloadManager {
      * 从「歌手 - 歌名.mp3」文件名反推 Song。
      * v1.4.3：支持 mp3/flac/m4a/aac/ogg/wav 等常见格式。
      * 无 " - " 分隔时歌名=整个文件名（去扩展名）、歌手=未知。
+     * v1.4.28：修复大写扩展名（.MP3/.FLAC）残留歌名——removeSuffix
+     * 大小写敏感删不掉 .MP3，endsWith(ignoreCase) 已保证后缀长度
+     * 与 ext 一致，直接按长度截断。
      */
     private fun songFromFileName(fileName: String): Song? {
         val ext = AUDIO_EXTENSIONS.firstOrNull { fileName.endsWith(it, ignoreCase = true) }
             ?: return null
-        val base = fileName.removeSuffix(ext)
+        val base = fileName.dropLast(ext.length)
         if (base.isBlank()) return null
         val idx = base.indexOf(" - ")
         val (artist, name) = if (idx > 0) {
@@ -800,7 +834,8 @@ object DownloadManager {
             put(MediaStore.Audio.Media.DISPLAY_NAME, newFileName)
             put(
                 MediaStore.Audio.Media.MIME_TYPE,
-                if (newFileName.endsWith(".flac")) "audio/flac" else "audio/mpeg"
+                // v1.4.28：ignoreCase——.FLAC 同样是 flac
+                if (newFileName.endsWith(".flac", true)) "audio/flac" else "audio/mpeg"
             )
             // v1.4.2：沿用原条目所在目录（导入歌曲可能不在 D_Music），
             // 查不到原路径时才落到 D_Music
@@ -1006,7 +1041,7 @@ object DownloadManager {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Audio.Media.DISPLAY_NAME, fileName)
-                put(MediaStore.Audio.Media.MIME_TYPE, if (fileName.endsWith("flac")) "audio/flac" else "audio/mpeg")
+                put(MediaStore.Audio.Media.MIME_TYPE, if (fileName.endsWith("flac", true)) "audio/flac" else "audio/mpeg")
                 put(MediaStore.Audio.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MUSIC}/D_Music")
                 put(MediaStore.Audio.Media.IS_PENDING, 1)
             }

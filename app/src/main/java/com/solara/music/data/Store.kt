@@ -79,6 +79,11 @@ object Store {
     // 扫描文件夹记忆（v1.4.3：null=默认 Music/D_Music）
     private const val KEY_SCAN_FOLDER = "scan_folder"
 
+    // 播放直链持久化（v1.4.29：key=source:id:br → 直链 URL。
+    // API 故障时的离线兜底：音频已全量缓存的歌用过期直链也能播——
+    // CacheDataSource 100% 命中根本不会碰上游）
+    private const val KEY_URL_CACHE = "url_cache"
+
     /** v1.4.20：最后退出时的主界面状态（tab / mePage / showPlayer）。 */
     private const val KEY_UI_STATE = "ui_state"
 
@@ -844,6 +849,44 @@ object Store {
     private fun readOnlineCovers(): org.json.JSONObject =
         runCatching {
             org.json.JSONObject(prefs.getString(KEY_ONLINE_COVERS, null) ?: "{}")
+        }.getOrDefault(org.json.JSONObject())
+
+    // ---------- 播放直链持久化（v1.4.29：API 故障时离线兜底） ----------
+
+    /** 读取歌曲缓存过的播放直链（key=source:id:br，音质参与），无则 null。 */
+    fun cachedUrl(source: String, id: String, br: String): String? {
+        val key = "$source:$id:$br"
+        return readUrlCache().optString(key).takeIf { it.isNotBlank() }
+    }
+
+    /** 缓存播放直链。空 URL 不存；与已存值相同不重复写盘。 */
+    fun saveUrl(source: String, id: String, br: String, url: String) {
+        if (url.isBlank()) return
+        val key = "$source:$id:$br"
+        val o = readUrlCache()
+        if (o.optString(key) == url) return
+        o.put(key, url)
+        prefs.edit().putString(KEY_URL_CACHE, o.toString()).apply()
+    }
+
+    /** 清除单曲直链（缓存直链播放失败时调用，触发重新解析）。 */
+    fun clearUrl(source: String, id: String, br: String) {
+        val key = "$source:$id:$br"
+        val o = readUrlCache()
+        if (!o.has(key)) return
+        o.remove(key)
+        prefs.edit().putString(KEY_URL_CACHE, o.toString()).apply()
+    }
+
+    /** 清空全部直链缓存（设置页清空播放缓存时同步调用）。 */
+    fun clearUrlCache() {
+        if (!prefs.contains(KEY_URL_CACHE)) return
+        prefs.edit().remove(KEY_URL_CACHE).apply()
+    }
+
+    private fun readUrlCache(): org.json.JSONObject =
+        runCatching {
+            org.json.JSONObject(prefs.getString(KEY_URL_CACHE, null) ?: "{}")
         }.getOrDefault(org.json.JSONObject())
 
     private fun migrateLocalCoverKey(old: Song, new: Song) {

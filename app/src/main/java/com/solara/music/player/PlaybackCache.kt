@@ -85,4 +85,20 @@ object PlaybackCache {
 
     /** 构造缓存 key：source:id:br（音质参与，切音质不串）。 */
     fun keyOf(source: String, id: String, br: String): String = "$source:$id:$br"
+
+    /**
+     * 该 key 的音频是否已 100% 缓存（v1.4.29：直链过期离线兜底的前提）。
+     * contentLength 由 CacheDataSource 写入时自动记录（无记录时按未全量
+     * 处理）；Media3 1.2.1 无 isFullyCached(key)，用 isCached(0, len)
+     * 检查全区间覆盖。cache 未启用（上限=0）恒 false。
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    fun isFullyCached(key: String): Boolean {
+        val c = cache ?: return false
+        return runCatching {
+            val len = c.getContentMetadata(key)
+                .get(androidx.media3.datasource.cache.ContentMetadata.KEY_CONTENT_LENGTH, -1L)
+            len > 0 && c.isCached(key, 0, len)
+        }.getOrDefault(false)
+    }
 }

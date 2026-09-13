@@ -328,6 +328,8 @@ fun SettingsScreen() {
                     clearing = true
                     CoroutineScope(Dispatchers.IO).launch {
                         com.solara.music.player.PlaybackCache.clear()
+                        // v1.4.29：音频缓存已清，直链兜底失去意义，同步清空
+                        com.solara.music.data.Store.clearUrlCache()
                         clearing = false
                     }
                 },

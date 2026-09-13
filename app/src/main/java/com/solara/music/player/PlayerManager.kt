@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 enum class PlayMode(val label: String) {
     /** 顺序播放：按顺序播完最后一首即停止（不绕回）。 */
@@ -101,6 +102,15 @@ object PlayerManager {
     private val maxConsecutiveFailures = 3
 
     /**
+     * v1.4.29：当前曲目是否用的是持久化直链兜底（API 失败 + 音频全量缓存）。
+     * 播放器报错时据此清掉该直链并重解析一次，防止坏直链反复重试。
+     */
+    @Volatile private var playingFromUrlCache = false
+    @Volatile private var urlCacheSong: Song? = null
+    @Volatile private var urlCacheBr: String? = null
+    @Volatile private var urlCacheRetryDone = false
+
+    /**
      * 启动后台播放服务（幂等）。仅在 App 前台调用（MainActivity.onCreate），
      * 用 startService 即可：Service onCreate 会立即 startForeground 常驻通知，
      * 不触发 startForegroundService 的 5 秒约束。
@@ -141,6 +151,18 @@ object PlayerManager {
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                // v1.4.29：缓存直链兜底播放失败（直链过期且音频未全量缓存等）——
+                // 清掉坏直链，重新走完整解析一次（不消耗失败计数，只重试一次）
+                if (playingFromUrlCache && !urlCacheRetryDone) {
+                    urlCacheRetryDone = true
+                    playingFromUrlCache = false
+                    urlCacheSong?.let { s -> urlCacheBr?.let { br ->
+                        Store.clearUrl(s.source, s.id, br)
+                    } }
+                    playError.tryEmit("「${songs().getOrNull(currentIndex.value)?.displayName ?: "当前歌曲"}」直链已过期，正在重新解析")
+                    playAt(currentIndex.value)
+                    return
+                }
                 // 播放器级错误（解码失败/网络中断）：按解析失败处理，自动跳下一首
                 consecutiveFailures++
                 if (consecutiveFailures < maxConsecutiveFailures) {
@@ -187,6 +209,10 @@ object PlayerManager {
         appContext = null
         isPlaying.value = false
         consecutiveFailures = 0
+        playingFromUrlCache = false
+        urlCacheSong = null
+        urlCacheBr = null
+        urlCacheRetryDone = false
     }
 
     /** 替换整个播放队列并从指定位置开始播放。 */
@@ -414,22 +440,48 @@ object PlayerManager {
         val p = playerRef ?: return
         pendingJob?.cancel()
         pendingJob = scope.launch {
+            val isLocalImport = song.source == "local" && song.id.startsWith("local:")
             // 本地已下载：优先播本地文件（离线可用），否则解析在线直链
             val localUri = withContext(Dispatchers.IO) {
                 appContext?.let { DownloadManager.findLocalPlayableUri(it, song) }
             }
             val quality = Store.settings.value.quality
-            val url = localUri ?: run {
-                try {
-                    MusicApi.resolveUrl(song, quality)
-                } catch (e: Exception) {
-                    null
-                }
+            // v1.4.28：本地导入歌（source=local）聚合接口没有这个源，
+            // resolveUrl 注定失败且故障时白等 20 秒——直接跳过在线解析
+            val pbKey = PlaybackCache.keyOf(song.source, song.id, quality)
+            val onlineUrl = if (localUri == null && !isLocalImport) {
+                try { MusicApi.resolveUrl(song, quality) } catch (e: Exception) { null }
+            } else {
+                null
             }
+            // v1.4.29：在线解析成功顺手持久化直链；API 失败时兜底——音频已
+            // 100% 缓存的歌用过期直链也能播（CacheDataSource 全命中不碰
+            // 上游），GD API 故障（如 522 宕机）时缓存过的歌照样能放
+            var usedCachedUrl = false
+            val url = when {
+                localUri != null -> localUri
+                onlineUrl != null -> onlineUrl.also {
+                    Store.saveUrl(song.source, song.id, quality, it)
+                }
+                isLocalImport -> null
+                else -> Store.cachedUrl(song.source, song.id, quality)
+                    ?.takeIf { PlaybackCache.isFullyCached(pbKey) }
+                    ?.also { usedCachedUrl = true }
+            }
+            // v1.4.29：记录兜底状态供 onPlayerError 清直链重解析
+            playingFromUrlCache = usedCachedUrl
+            urlCacheSong = if (usedCachedUrl) song else null
+            urlCacheBr = if (usedCachedUrl) quality else null
+            urlCacheRetryDone = false
             if (url.isNullOrBlank()) {
                 consecutiveFailures++
                 // v1.4.13 #65：解析失败给用户明确提示（网络差/音源不可用）
-                playError.tryEmit("「${song.displayName}」暂时无法播放（网络差或音源解析失败）")
+                playError.tryEmit(
+                    if (isLocalImport && localUri == null)
+                        "「${song.displayName}」本地文件已丢失，请重新扫描本地歌曲"
+                    else
+                        "「${song.displayName}」暂时无法播放（网络差或音源解析失败）"
+                )
                 // 连续失败达上限：停止滚动，停在当前曲目等待用户手动操作
                 if (consecutiveFailures >= maxConsecutiveFailures) {
                     consecutiveFailures = 0
@@ -441,15 +493,23 @@ object PlayerManager {
                 consecutiveFailures = 0
 
                 // 封面：内存缓存 → 磁盘持久化（v1.4.25）→ 在线解析（结果写盘）
+                // v1.4.28：封面解析绝不阻塞播放启动——
+                // ① 本地导入歌：在线 API 没有 local 源，调了注定失败（API 故障时
+                //   白等 20 秒，这就是"点本地歌要等 20 秒才响"的根因）；只读
+                //   matchCover 匹配成功后写盘的 URL（无网络请求），没有就 null
+                // ② 在线歌：API 兜底加 3 秒超时，封面只是通知栏显示用，
+                //   不值得拖住 prepare()
                 val cacheKey = "${song.source}:${song.picId.ifBlank { song.id }}"
-                val coverUrl = CoverCache.get(cacheKey)
-                    ?: Store.onlineCoverUrl(song)?.also { CoverCache.put(cacheKey, it) }
-                    ?: MusicApi.fetchPicUrl(song).also {
-                        if (it != null) {
-                            CoverCache.put(cacheKey, it)
-                            Store.saveOnlineCoverUrl(song, it)
+                val coverUrl = if (isLocalImport) {
+                    Store.localCoverUrl(song)
+                } else {
+                    CoverCache.get(cacheKey)
+                        ?: Store.onlineCoverUrl(song)?.also { CoverCache.put(cacheKey, it) }
+                        ?: withTimeoutOrNull(3000) { MusicApi.fetchPicUrl(song) }?.also { fetched ->
+                            CoverCache.put(cacheKey, fetched)
+                            Store.saveOnlineCoverUrl(song, fetched)
                         }
-                    }
+                }
 
                 val metadata = MediaMetadata.Builder()
                     .setTitle(song.name)
