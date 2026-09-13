@@ -60,6 +60,15 @@
             </intent-filter>
         </activity>
 
+        <!-- v1.4.27：更新安装落地页——「下载完成」通知的点击目标，透明无感，
+             只负责拉起系统安装器（Android 10+ 禁止后台弹界面，通知点击是唯一通道） -->
+        <activity
+            android:name=".InstallApkActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Solara.Transparent"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
+
         <service
             android:name=".player.PlaybackService"
             android:exported="false"

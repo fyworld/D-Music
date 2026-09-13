@@ -4,4 +4,13 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
+
+    <!-- v1.4.27：更新安装落地页——全透明无动画，拉起安装器后立即 finish 无感 -->
+    <style name="Theme.Solara.Transparent" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
 </resources>

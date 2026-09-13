@@ -112,7 +112,10 @@ fun UpdateDialog(
                     TextButton(onClick = {
                         val apk = (dlState as UpdateManager.DownloadState.Done).apkFile
                         val ok = UpdateManager.installApk(context, apk)
-                        if (!ok) {
+                        if (ok) {
+                            // v1.4.27：前台已拉起安装器，撤掉「点击安装」通知
+                            UpdateManager.cancelUpdateNotification()
+                        } else {
                             // Android 8+ 未获「安装未知应用」授权 → 引导去设置
                             val intent = UpdateManager.installPermissionSettingsIntent(context)
                             if (intent != null) runCatching { context.startActivity(intent) }

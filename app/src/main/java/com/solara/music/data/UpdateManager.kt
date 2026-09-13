@@ -1,11 +1,17 @@
 package com.solara.music.data
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
+import com.solara.music.InstallApkActivity
+import com.solara.music.R
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +36,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - 有新版本 → [updateInfo] 置位；关于页版本号下显示「发现新版本」入口
  * - 下载 APK（带进度，直连失败同样走镜像重试）→ 完成后拉起系统安装器
  * - lite / full 自动匹配各自 APK 资产（按文件名含不含 "lite" 区分）
+ * - v1.4.27：更新下载通知栏进度 + 完成后「点击安装」通知——切后台也能看进度、
+ *   点通知即装，不再依赖弹窗在前台
  */
 object UpdateManager {
 
@@ -72,6 +80,117 @@ object UpdateManager {
 
     /** 并发去重：冷启动时 LaunchedEffect 与 ON_RESUME 几乎同时触发。 */
     private val checkingNow = AtomicBoolean(false)
+
+    // ---- v1.4.27：更新下载通知（后台进度 + 完成后点击安装） ----
+
+    /** 更新下载通知 ID（与播放 100 / 歌曲下载 200 区分）。 */
+    private const val UPDATE_NOTIFICATION_ID = 300
+
+    /** 更新下载渠道 ID（独立于歌曲下载，避免用户关掉歌曲下载通知连带更新进度）。 */
+    private const val UPDATE_CHANNEL_ID = "d_music_update"
+
+    /** 通知刷新节流（300ms，与歌曲下载通知同频）。 */
+    private var lastNotifyAt = 0L
+
+    /** Application context（downloadApk 首次捕获，通知与安装用）。 */
+    private var appContextRef: Context? = null
+
+    /** 当前下载的版本号（进度/完成通知标题用）。 */
+    private var downloadingVersion: String = ""
+
+    /** 创建更新下载通知渠道：IMPORTANCE_DEFAULT（MIUI 不折叠）+ 静音（进度通知不出声）。 */
+    private fun ensureUpdateChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.getNotificationChannel(UPDATE_CHANNEL_ID) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        UPDATE_CHANNEL_ID,
+                        "版本更新下载",
+                        NotificationManager.IMPORTANCE_DEFAULT
+                    ).apply {
+                        setSound(null, null)
+                        enableVibration(false)
+                    }
+                )
+            }
+        }
+    }
+
+    /** 是否有通知权限（Android 13+ 未授权静默跳过，不影响下载）。 */
+    private fun canNotify(context: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
+
+    /** 撤掉更新下载通知（取消下载 / 安装成功时）。 */
+    fun cancelUpdateNotification() {
+        val context = appContextRef ?: return
+        runCatching {
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .cancel(UPDATE_NOTIFICATION_ID)
+        }
+    }
+
+    /**
+     * 刷新更新下载进度通知（v1.4.27）：
+     * - Progress：标题「正在下载新版本 vX.Y.Z」+ 进度条（300ms 节流）
+     * - Done：标题「新版本下载完成」+ 文本「点按安装 vY」；点击直接拉系统安装器，
+     *   不需要 App 在前台——后台弹界面被系统禁止，通知点击是唯一合规通道
+     */
+    private fun refreshUpdateNotification(state: DownloadState, versionName: String) {
+        val context = appContextRef ?: return
+        runCatching {
+            if (!canNotify(context)) return
+            ensureUpdateChannel(context)
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            when (state) {
+                is DownloadState.Progress -> {
+                    val now = System.currentTimeMillis()
+                    if (now - lastNotifyAt < 300) return
+                    lastNotifyAt = now
+                    val builder = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+                        .setSmallIcon(R.drawable.ic_stat_download)
+                        .setContentTitle("正在下载新版本 v$versionName")
+                        .setContentText("已下载 ${(state.progress * 100).toInt()}%")
+                        .setProgress(100, (state.progress * 100).toInt(), false)
+                        .setOngoing(true)
+                        .setOnlyAlertOnce(true)
+                        .build()
+                    nm.notify(UPDATE_NOTIFICATION_ID, builder)
+                }
+                is DownloadState.Done -> {
+                    lastNotifyAt = 0L
+                    val installIntent = PendingIntent.getActivity(
+                        context, 1,
+                        Intent(context, InstallApkActivity::class.java).apply {
+                            putExtra(InstallApkActivity.EXTRA_APK_PATH, state.apkFile.absolutePath)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        },
+                        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                    )
+                    val builder = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+                        .setSmallIcon(R.drawable.ic_stat_download)
+                        .setContentTitle("新版本 v$versionName 下载完成")
+                        .setContentText("点按安装")
+                        .setOngoing(false)
+                        .setAutoCancel(true)   // 点击后消失
+                        .setOnlyAlertOnce(true)
+                        .setContentIntent(installIntent)
+                        .build()
+                    nm.notify(UPDATE_NOTIFICATION_ID, builder)
+                }
+                is DownloadState.Failed -> {
+                    // 失败：撤掉进度通知，避免用户以为还在下载
+                    nm.cancel(UPDATE_NOTIFICATION_ID)
+                }
+                is DownloadState.Idle -> {
+                    // 取消下载：撤通知
+                    nm.cancel(UPDATE_NOTIFICATION_ID)
+                }
+            }
+        }
+    }
 
     /** 当前 App 是否 lite 纯净版。 */
     private val isLite: Boolean
@@ -217,7 +336,10 @@ object UpdateManager {
     fun downloadApk(context: Context, info: UpdateInfo) {
         downloadJob?.cancel()
         val appContext = context.applicationContext
+        appContextRef = appContext   // v1.4.27：通知与安装用
+        downloadingVersion = info.versionName
         downloadState.value = DownloadState.Progress(0f)
+        refreshUpdateNotification(DownloadState.Progress(0f), info.versionName)   // 首条立即显示
         downloadJob = scope.launch {
             try {
                 val dir = appContext.getExternalFilesDir(null) ?: File(appContext.filesDir, "updates")
@@ -237,8 +359,8 @@ object UpdateManager {
                     downloadTo(target, MIRROR_PREFIX + info.apkUrl, info.apkSize)
                 }
                 downloadState.value = DownloadState.Done(target)
-                Log.i(TAG, "APK 下载完成: $target (${target.length()} bytes)")
-            } catch (e: Exception) {
+                refreshUpdateNotification(DownloadState.Done(target), info.versionName)  // v1.4.27
+                Log.i(TAG, "APK 下载完成: $target (${target.length()} bytes)")            } catch (e: Exception) {
                 if (e is CancellationException) {
                     // 用户取消：只清理 APK 半成品文件
                     runCatching {
@@ -251,6 +373,9 @@ object UpdateManager {
                 }
                 Log.w(TAG, "APK 下载失败: ${e.message}")
                 downloadState.value = DownloadState.Failed(e.message ?: "下载失败")
+                refreshUpdateNotification(
+                    DownloadState.Failed(e.message ?: "下载失败"), info.versionName
+                )   // v1.4.27：失败撤进度通知
             }
         }
     }
@@ -277,6 +402,9 @@ object UpdateManager {
                             val p = downloaded.toFloat() / total
                             if (downloaded - lastPublish > 256 * 1024 || p >= 1f) {
                                 downloadState.value = DownloadState.Progress(p.coerceIn(0f, 1f))
+                                refreshUpdateNotification(
+                                    DownloadState.Progress(p.coerceIn(0f, 1f)), downloadingVersion
+                                )   // v1.4.27：后台进度通知
                                 lastPublish = downloaded
                             }
                         }
@@ -337,5 +465,6 @@ object UpdateManager {
         downloadJob?.cancel()
         downloadJob = null
         downloadState.value = DownloadState.Idle
+        cancelUpdateNotification()   // v1.4.27：取消时撤掉通知栏进度
     }
 }
