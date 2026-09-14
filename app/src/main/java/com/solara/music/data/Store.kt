@@ -90,6 +90,21 @@ object Store {
     /** v1.4.26：播放模式（顺序播放/顺序循环/单曲循环/随机）。 */
     private const val KEY_PLAY_MODE = "play_mode"
 
+    /**
+     * v1.4.35：后台播放保活引导状态。
+     * 0 = 未触发（默认）；1 = 检测到熄屏播放中断，待引导；
+     * 2 = 用户已完成设置（或永久忽略），不再提示。
+     */
+    private const val KEY_BG_PLAY_GUIDE = "bg_play_guide"
+
+    /**
+     * v1.4.36：服务死前是否在播放（进程被杀指纹）。
+     * 播放状态变化时持久化；服务重启（attachPlayer）时读取对比——
+     * was_playing=true 且非用户主动续播（pendingPlayOnAttach）=
+     * 进程/服务被系统杀（正常退出走 stopAndExit 会先置 false）。
+     */
+    private const val KEY_WAS_PLAYING = "was_playing"
+
     /** 最近播放列表上限：超出裁掉最旧的。 */
     private const val RECENT_LIMIT = 300
 
@@ -462,6 +477,24 @@ object Store {
     /** 记录跳过的版本：同一版本重启不再自动弹更新提示，直到更新的版本出现。 */
     fun saveSkippedVersion(version: String) {
         prefs.edit().putString("skipped_version", version).apply()
+    }
+
+    // ---------- 后台播放保活引导（v1.4.35） ----------
+
+    /** 0=未触发 1=检测到熄屏中断待引导 2=已完成设置/永久忽略。 */
+    fun bgPlayGuideState(): Int = prefs.getInt(KEY_BG_PLAY_GUIDE, 0)
+
+    fun saveBgPlayGuideState(state: Int) {
+        prefs.edit().putInt(KEY_BG_PLAY_GUIDE, state).apply()
+    }
+
+    // ---------- 服务死前播放状态（v1.4.36：进程被杀指纹） ----------
+
+    fun wasPlaying(): Boolean = prefs.getBoolean(KEY_WAS_PLAYING, false)
+
+    fun saveWasPlaying(playing: Boolean) {
+        // commit 同步写：进程随时可能被杀，apply 异步会丢
+        prefs.edit().putBoolean(KEY_WAS_PLAYING, playing).commit()
     }
 
     // ---------- 最近播放（v1.3.8） ----------

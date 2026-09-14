@@ -3,6 +3,7 @@ package com.solara.music.player
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -111,14 +113,86 @@ object PlayerManager {
     @Volatile private var urlCacheRetryDone = false
 
     /**
+     * v1.4.30：当前曲目播放器错误是否已原地重试过。
+     * 在线歌直链有时效（部分音源几分钟即过期），播放中 403 断流后
+     * 重新解析直链即可原地恢复——比直接跳歌体验好（不打断听感、
+     * 不浪费跳歌）。每首歌最多一次，resolveAndPlay 装载时重置。
+     */
+    @Volatile private var playerErrorRetryDone = false
+
+    /**
+     * v1.4.30：连续失败停止播放时的回调——PlaybackService 侧用来重建
+     * 占位通知。Media3 在 IDLE+空 timeline 时会撤掉媒体通知，用户会
+     * 误以为"App 退出了"；补一张暂停态占位通知（与冷启动样式一致），
+     * 点播放键走 togglePlayPause 自愈路径恢复，体验是"暂停"而非"退出"。
+     */
+    var onPlaybackHalted: (() -> Unit)? = null
+
+    /**
+     * v1.4.35：熄屏播放中断检测（真机省电策略指纹）。
+     * onPlayerError 时屏幕熄灭 → 大概率是 ROM 冻结/限制后台（CPU 休眠
+     * 断流走错误链）。UI 回前台时读此标志弹保活引导，消费后清零。
+     *
+     * v1.4.36 重做：不再看 isPlaying 瞬时值——断流时 ExoPlayer 先进
+     * BUFFERING（isPlaying 已 false）再报错，原条件永不成立。改为
+     * "用户播放意图"跟踪：主动播放过且未主动暂停/停止 = 想播；错误时
+     * 屏幕熄灭即算中断（亮屏下的网络错误是正常场景，不算）。
+     */
+    @Volatile var screenOffInterrupted = false
+        private set
+
+    /**
+     * v1.4.36：用户播放意图——true 表示用户主动播放过且未主动暂停/停止。
+     * 区别于 isPlaying（播放器瞬时状态，断流 BUFFERING 时会翻 false）：
+     * 意图只在用户主动操作（togglePlayPause 播放 / playAt / next 等）
+     * 时置 true，在用户主动暂停/停止时置 false。
+     */
+    @Volatile private var userWantsPlayback = false
+
+    /**
+     * v1.4.36：App 是否在前台（MainActivity onStart/onStop 维护——
+     * App 仅此一个 Activity，其生命周期即 App 前后台）。
+     * 用于熄屏中断检测的补充指纹：MIUI 冻结进程场景下，解冻时错误
+     * 才触发，此时屏幕可能已亮（用户刚回前台），但 App 前后状态
+     * 切换与错误回调存在时间差，"错误发生时 App 在后台"是更稳的信号。
+     */
+    @Volatile var appInForeground = false
+
+    /** v1.4.35：UI 消费中断标志（读取并清零）。 */
+    fun consumeScreenOffInterrupted(): Boolean {
+        val v = screenOffInterrupted
+        screenOffInterrupted = false
+        return v
+    }
+
+    /**
      * 启动后台播放服务（幂等）。仅在 App 前台调用（MainActivity.onCreate），
      * 用 startService 即可：Service onCreate 会立即 startForeground 常驻通知，
      * 不触发 startForegroundService 的 5 秒约束。
+     *
+     * v1.4.34：来电返回等竞态窗口下 startService 可能抛
+     * BackgroundServiceStartNotAllowedException（Android 12+）——通话期间
+     * uid 已是后台（bg:+5m5s），挂断返回时 onStart 先于 uid 状态回升执行。
+     * 此时绝不能让异常穿透闪退：吞掉并延迟重试（此时 App 已真正回到前台，
+     * startService 合法）；服务未起时点播放走 ensureServiceAlive 自愈链路。
      */
     fun ensureService(context: Context) {
         val appCtx = context.applicationContext
         bootContext = appCtx
-        appCtx.startService(Intent(appCtx, PlaybackService::class.java))
+        try {
+            appCtx.startService(Intent(appCtx, PlaybackService::class.java))
+        } catch (e: Exception) {
+            // 竞态窗口：uid 尚为后台态。App 正在回到前台，稍后重试即可。
+            Log.w("PlayerManager", "startService 被拒（后台竞态），1.5s 后重试", e)
+            scope.launch {
+                delay(1500)
+                runCatching {
+                    appCtx.startService(Intent(appCtx, PlaybackService::class.java))
+                }.onFailure {
+                    Log.w("PlayerManager", "重试 startService 仍失败，等待点播放自愈", it)
+                }
+            }
+        }
     }
 
     /**
@@ -126,10 +200,14 @@ object PlayerManager {
      * 只走 onStart/onResume（不重走 onCreate → ensureService），playerRef
      * 已为 null，点播放将永远无反应。此处在点播放时尝试重启服务；
      * 重启后 attachPlayer 会消费 pendingPlayOnAttach 自动续播。
+     *
+     * v1.4.34：同样包住 BackgroundServiceStartNotAllowedException——
+     * 用户点播放时 App 必在前台，但 uid 状态回升可能滞后于点击（同竞态）。
      */
     private fun ensureServiceAlive() {
         val ctx = bootContext ?: return
         runCatching { ctx.startService(Intent(ctx, PlaybackService::class.java)) }
+            .onFailure { Log.w("PlayerManager", "ensureServiceAlive startService 失败", it) }
     }
 
     /** 由 [PlaybackService.onCreate] 调用：注入 ExoPlayer 与应用上下文并绑定事件。 */
@@ -142,15 +220,50 @@ object PlayerManager {
         p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlayingNow: Boolean) {
                 isPlaying.value = isPlayingNow
+                // v1.4.36：播放状态翻转即持久化（commit 同步——进程被杀时
+                // apply 异步写会丢，此值就是"死前状态"指纹）。仅在翻转
+                // 时写盘，播放期间不重复写。
+                if (isPlayingNow != Store.wasPlaying()) {
+                    runCatching { Store.saveWasPlaying(isPlayingNow) }
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
                     onEnded()
                 }
+                if (playbackState == Player.STATE_READY) {
+                    // v1.4.30：曲目成功装载即重置失败计数与重试标记——
+                    // 计数语义是"连续失败"，成功一次就断链。原实现把重置
+                    // 放在 playAt 的 IDLE 分支，自动跳歌链上每次 playAt 都
+                    // 清零，"3 连败停止"从未真正生效（API 故障时无限滚队列）。
+                    consecutiveFailures = 0
+                    playerErrorRetryDone = false
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                // v1.4.36：熄屏播放中断指纹（重做）——满足任一即判定：
+                // ① 错误发生时屏幕熄灭；② 错误发生时 App 在后台（MIUI 冻结
+                // 进程场景：解冻时错误才触发，屏幕可能已亮但 App 仍在
+                // 后台状态切换窗口）。前提：用户播放意图为真（主动播放过、
+                // 未主动暂停/停止）。亮屏+前台下的网络错误是正常场景不算。
+                // 标记后由 UI 回前台弹保活引导（省电策略限制只能引导用户
+                // 手动设置，代码无法绕过）。
+                // 不看 isPlaying 瞬时值：断流先 BUFFERING（isPlaying 已
+                // false）再报错，原 v1.4.35 条件永不成立（实测未弹出根因）。
+                runCatching {
+                    if (userWantsPlayback) {
+                        val pm = appContext?.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                        val screenOff = pm != null && !pm.isInteractive
+                        if (screenOff || !appInForeground) {
+                            if (Store.bgPlayGuideState() == 0) {
+                                Store.saveBgPlayGuideState(1)
+                                screenOffInterrupted = true
+                            }
+                        }
+                    }
+                }
                 // v1.4.29：缓存直链兜底播放失败（直链过期且音频未全量缓存等）——
                 // 清掉坏直链，重新走完整解析一次（不消耗失败计数，只重试一次）
                 if (playingFromUrlCache && !urlCacheRetryDone) {
@@ -163,7 +276,18 @@ object PlayerManager {
                     playAt(currentIndex.value)
                     return
                 }
-                // 播放器级错误（解码失败/网络中断）：按解析失败处理，自动跳下一首
+                // v1.4.30：播放器级错误（解码失败/网络中断/直链过期 403）先原地
+                // 重试当前歌——重新解析直链后 setMediaItem+prepare 会重置 IDLE。
+                // 在线歌直链普遍几分钟过期，"播着播着断流"大多是过期而非歌坏，
+                // 原地重试能无缝恢复；只有重试仍失败才跳下一首。
+                if (!playerErrorRetryDone) {
+                    playerErrorRetryDone = true
+                    playError.tryEmit("「${songs().getOrNull(currentIndex.value)?.displayName ?: "当前歌曲"}」播放中断，正在重试")
+                    playAt(currentIndex.value)
+                    return
+                }
+                playerErrorRetryDone = false
+                // 重试仍失败：按解析失败处理，自动跳下一首
                 consecutiveFailures++
                 if (consecutiveFailures < maxConsecutiveFailures) {
                     playError.tryEmit("「${songs().getOrNull(currentIndex.value)?.displayName ?: "当前歌曲"}」播放失败，换下一首")
@@ -171,12 +295,19 @@ object PlayerManager {
                 } else {
                     consecutiveFailures = 0
                     isPlaying.value = false
+                    // v1.4.36：错误链最终停止 = 播放意图终止（用户点播放
+                    // 重新置真）
+                    userWantsPlayback = false
                     // v1.4.13 #61：停止自动跳歌后必须显式 stop 清出 IDLE 态——
                     // ExoPlayer 出错后停留在 STATE_IDLE，后续 play() 是空操作，
                     // 表现为"点播放无反应"（假死）。stop() 后再点播放会走
                     // togglePlayPause 的 mediaItemCount==0 自愈分支重新装载。
                     playError.tryEmit("连续播放失败，已停止自动切换")
                     runCatching { p.stop(); p.clearMediaItems() }
+                    // v1.4.30：Media3 在 IDLE+空 timeline 时会撤掉媒体通知，
+                    // 用户会误以为"App 退出了"——回调 Service 重建占位通知
+                    // （暂停态样式），点播放键即走自愈路径恢复。
+                    onPlaybackHalted?.invoke()
                 }
             }
         })
@@ -190,6 +321,19 @@ object PlayerManager {
             if (idx >= 0) playAt(idx) else if (queue.value.isNotEmpty()) playAt(0)
         } else {
             restoreQueue()
+            // v1.4.36：播放被系统强制终止指纹——服务重建时 was_playing=true
+            // 即上次死前在播放且未走正常退出（stopAndExit 会 pause →
+            // onIsPlayingChanged(false) → was_playing=false）。
+            // 服务活着时 attachPlayer 被 attached 守卫跳过，不会重复触发；
+            // 用户 HOME 后服务若存活，回前台不重走此分支。唯一触发路径：
+            // 进程/服务死了又重启 = 播放确实被强制终止过。
+            // （v1.4.36 首版加的 !appInForeground 条件会挡掉用户点图标
+            // 冷启动的场景——onStart 先置前台再 ensureService，时序上
+            // 永远 false，实测不触发，已移除。）
+            if (Store.wasPlaying() && Store.bgPlayGuideState() == 0) {
+                Store.saveBgPlayGuideState(1)
+                screenOffInterrupted = true
+            }
         }
     }
 
@@ -213,6 +357,10 @@ object PlayerManager {
         urlCacheSong = null
         urlCacheBr = null
         urlCacheRetryDone = false
+        playerErrorRetryDone = false
+        onPlaybackHalted = null
+        // v1.4.36：服务销毁（用户退出 App）时播放意图一并终止
+        userWantsPlayback = false
     }
 
     /** 替换整个播放队列并从指定位置开始播放。 */
@@ -225,6 +373,9 @@ object PlayerManager {
     fun playAt(index: Int) {
         val songs = queue.value
         if (index !in songs.indices) return
+        // v1.4.36：用户/自动链装载播放 = 播放意图为真（自动跳歌链也延续
+        // 用户最初的播放意图；错误链停止时会显式置 false）
+        userWantsPlayback = true
         val p = playerRef
         if (p == null) {
             // 服务未就绪：记住意图，attachPlayer 恢复队列后自动播放；
@@ -235,11 +386,8 @@ object PlayerManager {
             Store.saveQueue(songs, index) // 落盘 + 备份，防进程被杀丢队列
             return
         }
-        // v1.4.13 #61：出错后残留的 IDLE 态在这里一并清理——
-        // resolveAndPlay 走 setMediaItem+prepare 会自动重置状态
-        if (p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED) {
-            consecutiveFailures = 0
-        }
+        // v1.4.30：失败计数重置移到 STATE_READY（见 onPlaybackStateChanged）；
+        // 此处不再清零，保证自动跳歌链上的连续失败能累计到停止阈值。
         currentIndex.value = index
         Store.saveQueue(songs, index)
         Store.addRecent(songs[index]) // 最近播放：去重头插
@@ -270,11 +418,22 @@ object PlayerManager {
             // 停在 STATE_ENDED——这两种状态下 play() 都是静默空操作，这就是
             // "长期不播放后再点播放无反应、要杀掉 App 重启才恢复"的根因。
             // 自愈方法：重新装载当前曲目（重新解析直链 + prepare）。
+            // v1.4.30：手动点播放属于用户主动行为，重置失败计数与重试标记
+            // （与自动跳歌链区分开——用户手动重试永远给他机会）。
             consecutiveFailures = 0
+            playerErrorRetryDone = false
             playAt(currentIndex.value.coerceAtLeast(0))
             return
         }
-        if (p.isPlaying) p.pause() else p.play()
+        if (p.isPlaying) {
+            // v1.4.36：用户主动暂停 = 播放意图终止
+            userWantsPlayback = false
+            p.pause()
+        } else {
+            // v1.4.36：用户主动恢复播放 = 播放意图为真
+            userWantsPlayback = true
+            p.play()
+        }
     }
 
     fun seekTo(positionMs: Long) {
@@ -357,6 +516,8 @@ object PlayerManager {
         pendingJob?.cancel()
         playerRef?.pause()
         isPlaying.value = false
+        // v1.4.36：用户主动停止 = 播放意图终止
+        userWantsPlayback = false
     }
 
     /** 通知栏"停止"按钮：停止播放并退出 App。 */
@@ -531,6 +692,8 @@ object PlayerManager {
                 p.setMediaItem(item)
                 p.prepare()
                 p.playWhenReady = true
+                // v1.4.30：装载成功重置播放器错误重试标记（READY 回调双保险）
+                playerErrorRetryDone = false
             }
         }
     }

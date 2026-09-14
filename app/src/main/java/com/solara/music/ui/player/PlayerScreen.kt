@@ -127,6 +127,14 @@ fun PlayerScreen(
     var showQueue by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var dragPosition by remember { mutableStateOf<Float?>(null) }
+
+    /**
+     * v1.4.32：拖动释放后的"锚定"进度——seek 生效前播放器位置仍是旧值，
+     * 若立即清 dragPosition，slider 会先跳回拖动前的位置、seek 生效后再跳到
+     * 目标位置（"先跑回再跑到"）。释放后把目标位置存进 seekAnchor 并保持
+     * 显示，直到轮询位置真正到达目标附近（±500ms）或超时/切歌才解除。
+     */
+    var seekAnchor by remember { mutableStateOf<Float?>(null) }
     var position by remember { mutableStateOf(0L) }
     var duration by remember { mutableStateOf(0L) }
 
@@ -197,13 +205,31 @@ fun PlayerScreen(
     }
 
     LaunchedEffect(player) {
+        var anchorAtMs = 0L   // v1.4.32：锚定建立时刻（绝对超时兜底用）
         while (true) {
             player?.let {
                 position = it.currentPosition.coerceAtLeast(0L)
                 duration = it.duration.takeIf { d -> d >= 0 } ?: 0L
+                // v1.4.32：拖动释放后锚定目标位置——播放器位置到达目标附近才解除，
+                // 期间 slider/时间文本稳定停在拖动落点，不回跳
+                seekAnchor?.let { a ->
+                    if (duration > 0) {
+                        val targetMs = a * duration
+                        val arrived = position >= targetMs - 500 && position <= targetMs + 500
+                        // 兜底：seek 异常（如流式源不支持精确 seek）时 3 秒后强制回落实时位置，
+                        // 避免进度条永远钉在目标处不动
+                        val timedOut = System.currentTimeMillis() - anchorAtMs > 3000
+                        if (arrived || timedOut) seekAnchor = null
+                    } else seekAnchor = null
+                } ?: run { anchorAtMs = System.currentTimeMillis() }
             }
             delay(200L)
         }
+    }
+
+    // v1.4.32：切歌解除锚定（新歌位置从 0 开始，旧锚定无意义）
+    LaunchedEffect(song) {
+        seekAnchor = null
     }
 
     val currentLine = if (tappingMode) {
@@ -761,15 +787,27 @@ fun PlayerScreen(
             }
 
             // ---- 进度条 + 控制（固定底部）----
+            // v1.4.32：拖动中显示拖动位置；释放后锚定目标位置（seekAnchor），
+            // 直到播放器位置真正到达才回落到实时位置——消除"先跳回旧位置再跳到目标"
             val sliderValue = dragPosition
+                ?: seekAnchor
                 ?: (if (duration > 0) position.toFloat() / duration else 0f)
+            // v1.4.32：时间文本与 slider 同源（拖动/锚定期间显示目标时间，不回跳）
+            val displayedPositionMs = when {
+                dragPosition != null && duration > 0 -> (dragPosition!! * duration).toLong()
+                seekAnchor != null && duration > 0 -> (seekAnchor!! * duration).toLong()
+                else -> position
+            }
             Column {
                 Slider(
                     value = sliderValue,
                     onValueChange = { dragPosition = it },
                     onValueChangeFinished = {
                         dragPosition?.let { f ->
-                            if (duration > 0) PlayerManager.seekTo((f * duration).toLong())
+                            if (duration > 0) {
+                                PlayerManager.seekTo((f * duration).toLong())
+                                seekAnchor = f   // v1.4.32：锚定目标位置直到 seek 真正生效
+                            }
                         }
                         dragPosition = null
                     },
@@ -778,7 +816,7 @@ fun PlayerScreen(
                 )
                 Row(Modifier.fillMaxWidth()) {
                     Text(
-                        text = formatMs(position),
+                        text = formatMs(displayedPositionMs),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -20,12 +20,15 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 版本更新管理（v1.4.19 建立，v1.4.21 增强）：
@@ -38,6 +41,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - lite / full 自动匹配各自 APK 资产（按文件名含不含 "lite" 区分）
  * - v1.4.27：更新下载通知栏进度 + 完成后「点击安装」通知——切后台也能看进度、
  *   点通知即装，不再依赖弹窗在前台
+ * - v1.4.31：修复「取消下载」无效——call.cancel() 硬中断阻塞 IO + 代数计数
+ *   丢弃取消后旧协程的迟到进度/终态发布（此前点取消后进度通知会重新弹出）
  */
 object UpdateManager {
 
@@ -74,6 +79,12 @@ object UpdateManager {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var downloadJob: Job? = null
+
+    /** v1.4.31：当前下载的 OkHttp Call——取消下载时硬中断（cancel() 使阻塞的 read 立即抛 IOException）。 */
+    @Volatile private var currentCall: Call? = null
+
+    /** v1.4.31：下载代数计数。每次发起下载 +1；取消后旧协程的迟到发布被丢弃，防止「点取消又被拉回下载」。 */
+    private val downloadEpoch = AtomicInteger(0)
 
     /** 上次发起检查的时间戳（回前台补查节流用）。 */
     private var lastCheckAt = 0L
@@ -335,55 +346,81 @@ object UpdateManager {
      */
     fun downloadApk(context: Context, info: UpdateInfo) {
         downloadJob?.cancel()
+        currentCall?.cancel()   // v1.4.31：硬中断旧下载（若有）
+        val epoch = downloadEpoch.incrementAndGet()   // v1.4.31：本次下载的代数
         val appContext = context.applicationContext
         appContextRef = appContext   // v1.4.27：通知与安装用
         downloadingVersion = info.versionName
+        lastNotifyAt = 0L   // v1.4.31：重置通知节流，重试/重新下载时首条进度通知立即显示
         downloadState.value = DownloadState.Progress(0f)
         refreshUpdateNotification(DownloadState.Progress(0f), info.versionName)   // 首条立即显示
         downloadJob = scope.launch {
+            val dir = appContext.getExternalFilesDir(null) ?: File(appContext.filesDir, "updates")
+            val fileName = "D.Music-${info.versionTag}.apk"
+            val target = File(dir, fileName)
+            // v1.4.31：捕获本协程 Job 传给 downloadTo（downloadJob 字段可能已被 resetDownload 置 null）
+            val selfJob = coroutineContext[Job]!!
             try {
-                val dir = appContext.getExternalFilesDir(null) ?: File(appContext.filesDir, "updates")
                 if (!dir.exists()) dir.mkdirs()
-                val fileName = "D.Music-${info.versionTag}.apk"
-                val target = File(dir, fileName)
                 if (target.exists()) target.delete()
 
                 try {
-                    downloadTo(target, info.apkUrl, info.apkSize)
+                    downloadTo(target, info.apkUrl, info.apkSize, epoch, selfJob)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // 直连失败 → 镜像重试（v1.4.21）
-                    Log.w(TAG, "直连下载失败（${e.message}），改走镜像重试")
-                    if (target.exists()) target.delete()
-                    downloadTo(target, MIRROR_PREFIX + info.apkUrl, info.apkSize)
+                    // v1.4.31：仅「协程仍在运行 + 非 call.cancel() 中断」才镜像重试——
+                    // 取消时 OkHttp 可能抛 Socket closed 等各种 IOException，一律不重试
+                    if (!isCallCancelled(e) && selfJob.isActive) {
+                        Log.w(TAG, "直连下载失败（${e.message}），改走镜像重试")
+                        if (target.exists()) target.delete()
+                        downloadTo(target, MIRROR_PREFIX + info.apkUrl, info.apkSize, epoch, selfJob)
+                    } else throw e
                 }
-                downloadState.value = DownloadState.Done(target)
-                refreshUpdateNotification(DownloadState.Done(target), info.versionName)  // v1.4.27
-                Log.i(TAG, "APK 下载完成: $target (${target.length()} bytes)")            } catch (e: Exception) {
-                if (e is CancellationException) {
-                    // 用户取消：只清理 APK 半成品文件
-                    runCatching {
-                        appContext.getExternalFilesDir(null)?.let { dir ->
-                            dir.listFiles { f -> f.name.endsWith(".apk") }?.forEach { it.delete() }
-                        }
+                // v1.4.31：只有最新代数才允许发布终态（旧协程迟到完成不覆盖新状态）
+                if (downloadEpoch.get() == epoch) {
+                    downloadState.value = DownloadState.Done(target)
+                    refreshUpdateNotification(DownloadState.Done(target), info.versionName)  // v1.4.27
+                    Log.i(TAG, "APK 下载完成: $target (${target.length()} bytes)")
+                }
+            } catch (e: Exception) {
+                // v1.4.31：取消的判定——CancellationException / call.cancel() 的 IOException /
+                // 代数已过期（resetDownload 后任何迟到的异常都视为取消，不误报"下载失败"）
+                if (e is CancellationException || isCallCancelled(e) || downloadEpoch.get() != epoch) {
+                    // 用户取消：只清理本次的 APK 半成品文件
+                    runCatching { if (target.exists()) target.delete() }
+                    if (downloadEpoch.get() == epoch) {
+                        Log.i(TAG, "APK 下载已取消")
                     }
-                    Log.i(TAG, "APK 下载已取消")
                     return@launch
                 }
                 Log.w(TAG, "APK 下载失败: ${e.message}")
-                downloadState.value = DownloadState.Failed(e.message ?: "下载失败")
-                refreshUpdateNotification(
-                    DownloadState.Failed(e.message ?: "下载失败"), info.versionName
-                )   // v1.4.27：失败撤进度通知
+                if (downloadEpoch.get() == epoch) {
+                    downloadState.value = DownloadState.Failed(e.message ?: "下载失败")
+                    refreshUpdateNotification(
+                        DownloadState.Failed(e.message ?: "下载失败"), info.versionName
+                    )   // v1.4.27：失败撤进度通知
+                }
+            } finally {
+                // v1.4.31：本次协程退出时清 Call 引用（防泄漏；最新代数才清，避免误清新下载的）
+                if (downloadEpoch.get() == epoch) currentCall = null
             }
         }
     }
 
-    /** 从指定 URL（直连或镜像）下载 APK 到 target，进度写 [downloadState]（阻塞 IO）。 */
-    private fun downloadTo(target: File, url: String, expectedSize: Long) {
+    /** v1.4.31：判断异常是否由 call.cancel() 硬中断引起（OkHttp 抛「Canceled」IOException）。 */
+    private fun isCallCancelled(e: Throwable): Boolean =
+        e is IOException && e.message?.contains("cancel", ignoreCase = true) == true
+
+    /**
+     * 从指定 URL（直连或镜像）下载 APK 到 target，进度写 [downloadState]（阻塞 IO）。
+     * v1.4.31：记录 Call 供硬取消；循环内检查协程取消（双保险）+ 代数校验（迟到发布丢弃）。
+     */
+    private fun downloadTo(target: File, url: String, expectedSize: Long, epoch: Int, selfJob: Job) {
         val req = Request.Builder().url(url).build()
-        client.newCall(req).execute().use { resp ->
+        val call = client.newCall(req)
+        currentCall = call   // v1.4.31：暴露给 resetDownload 硬中断
+        call.execute().use { resp ->
             if (!resp.isSuccessful) throw IllegalStateException("HTTP ${resp.code}")
             val body = resp.body ?: throw IllegalStateException("empty body")
             val total = if (expectedSize > 0) expectedSize else body.contentLength()
@@ -393,6 +430,8 @@ object UpdateManager {
                     val buf = ByteArray(64 * 1024)
                     var lastPublish = 0L
                     while (true) {
+                        // v1.4.31：协程取消 → 立即退出循环（call.cancel() 通常已使 read 抛异常，此处兜底）
+                        if (!selfJob.isActive) break
                         val n = input.read(buf)
                         if (n < 0) break
                         output.write(buf, 0, n)
@@ -401,10 +440,13 @@ object UpdateManager {
                         if (total > 0) {
                             val p = downloaded.toFloat() / total
                             if (downloaded - lastPublish > 256 * 1024 || p >= 1f) {
-                                downloadState.value = DownloadState.Progress(p.coerceIn(0f, 1f))
-                                refreshUpdateNotification(
-                                    DownloadState.Progress(p.coerceIn(0f, 1f)), downloadingVersion
-                                )   // v1.4.27：后台进度通知
+                                // v1.4.31：仅最新代数才发布（取消后旧循环不再覆盖 Idle）
+                                if (downloadEpoch.get() == epoch) {
+                                    downloadState.value = DownloadState.Progress(p.coerceIn(0f, 1f))
+                                    refreshUpdateNotification(
+                                        DownloadState.Progress(p.coerceIn(0f, 1f)), downloadingVersion
+                                    )   // v1.4.27：后台进度通知
+                                }
                                 lastPublish = downloaded
                             }
                         }
@@ -412,7 +454,10 @@ object UpdateManager {
                     output.flush()
                 }
             }
-            if (total > 0 && downloaded < total) throw IllegalStateException("下载不完整")
+            // v1.4.31：取消导致的提前退出不算「下载不完整」失败
+            if (selfJob.isActive && total > 0 && downloaded < total) {
+                throw IllegalStateException("下载不完整")
+            }
         }
     }
 
@@ -462,7 +507,11 @@ object UpdateManager {
 
     /** 取消下载并重置状态（「取消下载」按钮 / 关闭弹窗时）。 */
     fun resetDownload() {
+        Log.i(TAG, "APK 下载已取消（用户点击）")
+        downloadEpoch.incrementAndGet()   // v1.4.31：旧协程的迟到发布全部失效
         downloadJob?.cancel()
+        currentCall?.cancel()   // v1.4.31：硬中断——阻塞中的 execute/read 立即抛 IOException
+        currentCall = null
         downloadJob = null
         downloadState.value = DownloadState.Idle
         cancelUpdateNotification()   // v1.4.27：取消时撤掉通知栏进度

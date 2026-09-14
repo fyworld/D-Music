@@ -83,6 +83,10 @@ class PlaybackService : MediaSessionService() {
                 /* handleAudioFocus = */ true
             )
             .setHandleAudioBecomingNoisy(true)
+            // v1.4.33：熄屏后保持 CPU 唤醒（PARTIAL_WAKE_LOCK）。
+            // 前台服务只保证进程不被杀，不保证 CPU 不休眠；网络音频流
+            // 读取依赖 CPU，熄屏数分钟后 CPU 休眠 → 流停滞 → 播放中断。
+            .setWakeMode(C.WAKE_MODE_LOCAL)
 
         // 挂缓存：CacheDataSource 优先读本地缓存，未命中走网络边下边存。
         // 上限 0（设置关闭）时不挂，直连播放
@@ -201,6 +205,19 @@ class PlaybackService : MediaSessionService() {
             combine(Store.favorites, PlayerManager.currentSong) { _, _ -> Unit }
                 .drop(1) // 跳过初始值，避免启动时空队列触发无谓刷新
                 .collect { refreshFavorite() }
+        }
+
+        // v1.4.30：连续失败停止播放后重建占位通知——
+        // PlayerManager 停止时 stop()+clearMediaItems() 会让 Media3 撤掉
+        // 媒体通知（IDLE+空 timeline），通知栏瞬间"干净"了，用户以为 App
+        // 退出。此处立即补一张暂停态占位通知（与冷启动样式一致），用户
+        // 点通知上的播放键走 togglePlayPause 自愈分支恢复播放。
+        PlayerManager.onPlaybackHalted = {
+            if (PlayerManager.currentSong.value != null) {
+                // 清掉上一首的占位封面缓存，避免通知显示旧歌封面
+                placeholderCover = null
+                notificationManager.notify(NOTIFICATION_ID, buildServiceNotification())
+            }
         }
 
         // 自定义媒体通知（RemoteViews 布局），替换 Media3 默认通知

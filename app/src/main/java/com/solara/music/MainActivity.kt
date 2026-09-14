@@ -87,6 +87,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // v1.4.36：App 前台标志（熄屏中断检测的补充指纹——App 仅此一个
+        // Activity，其生命周期即 App 前后台）
+        PlayerManager.appInForeground = true
         // v1.4.13 #61：从后台切回时确保播放服务存活——服务可能已被系统
         // 回收（进程仍在），此时 playerRef 为 null，点播放会无反应。
         // startService 幂等：服务活着时无副作用。
@@ -94,6 +97,13 @@ class MainActivity : ComponentActivity() {
         // v1.4.21：回前台节流补查更新（30 分钟内不重复）——进程被播放服务
         // 保活时，界面不会重新组合，启动时的静默检查不会再触发。
         com.solara.music.data.UpdateManager.checkIfStale()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // v1.4.36：App 退到后台（含熄屏）——错误链若在此期间触发即为
+        // 后台播放中断指纹
+        PlayerManager.appInForeground = false
     }
 
     override fun onDestroy() {

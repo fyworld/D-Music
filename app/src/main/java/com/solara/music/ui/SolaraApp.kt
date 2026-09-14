@@ -146,6 +146,29 @@ fun SolaraApp() {
         }
     }
 
+    // v1.4.35：熄屏播放中断保活引导——回前台时若检测到中断标志则弹窗
+    // （中断发生在熄屏期间，用户看不到；回前台第一时间提示去设置省电策略）
+    var showBgPlayGuide by remember { mutableStateOf(false) }
+    // 冷启动兜底：中断后进程若被杀重启，运行时标志丢失，但 Store 状态 1
+    // 还在——首次进入时同样弹出（用户还没看到引导）
+    LaunchedEffect(Unit) {
+        if (Store.bgPlayGuideState() == 1) {
+            showBgPlayGuide = true
+        }
+    }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                if (PlayerManager.consumeScreenOffInterrupted()) {
+                    showBgPlayGuide = true
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val downloadTasks by DownloadManager.tasks.collectAsState()
     val activeDownloads = downloadTasks.count { it.status == DownloadStatus.DOWNLOADING }
 
@@ -366,6 +389,13 @@ fun SolaraApp() {
                 onDismiss = { showUpdateDialog = false }   // 关弹窗不取消下载（后台继续）
             )
         }
+    }
+
+    // v1.4.35：熄屏播放中断保活引导弹窗
+    if (showBgPlayGuide) {
+        com.solara.music.ui.components.BackgroundPlayGuideDialog(
+            onFinished = { showBgPlayGuide = false }
+        )
     }
 }
 
