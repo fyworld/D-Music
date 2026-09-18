@@ -305,10 +305,12 @@ fun SettingsScreen() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(8.dp))
+            // v1.4.38：档位两行重排——容量档位（10/30/50GB）在前，
+            // 「关闭 + 清空缓存」在后；清空缓存用 FilterChip 与关闭同字体同框，
+            // 紧凑排列（不右对齐），视觉与容量档位行一致。
+            // 容量档位：10G / 30G / 50G（30G ≈ 3000 首 320k，默认）
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // 上限档位：关 / 10G / 30G / 50G（30G ≈ 3000 首 320k，默认）
                 listOf(
-                    0L to "关闭",
                     10L shl 30 to "10GB",
                     30L shl 30 to "30GB",
                     50L shl 30 to "50GB"
@@ -320,21 +322,34 @@ fun SettingsScreen() {
                             com.solara.music.player.PlaybackCache.applyLimit(context, limit)
                         },
                         label = { Text(label) }
-                    )                }
+                    )
+                }
             }
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = {
-                    clearing = true
-                    CoroutineScope(Dispatchers.IO).launch {
-                        com.solara.music.player.PlaybackCache.clear()
-                        // v1.4.29：音频缓存已清，直链兜底失去意义，同步清空
-                        com.solara.music.data.Store.clearUrlCache()
-                        clearing = false
-                    }
-                },
-                enabled = !clearing && cacheLimit > 0
-            ) { Text(if (clearing) "清空中…" else "清空播放缓存") }
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = cacheLimit <= 0,
+                    onClick = {
+                        Store.updateSettings { it.copy(playbackCacheLimitBytes = 0L) }
+                        com.solara.music.player.PlaybackCache.applyLimit(context, 0L)
+                    },
+                    label = { Text("关闭") }
+                )
+                FilterChip(
+                    selected = false,
+                    enabled = !clearing && cacheLimit > 0,
+                    onClick = {
+                        clearing = true
+                        CoroutineScope(Dispatchers.IO).launch {
+                            com.solara.music.player.PlaybackCache.clear()
+                            // v1.4.29：音频缓存已清，直链兜底失去意义，同步清空
+                            com.solara.music.data.Store.clearUrlCache()
+                            clearing = false
+                        }
+                    },
+                    label = { Text(if (clearing) "清空中…" else "清空缓存") }
+                )
+            }
         }
 
         // 底部版本信息
