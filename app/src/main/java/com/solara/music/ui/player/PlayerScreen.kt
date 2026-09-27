@@ -30,6 +30,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowRightAlt
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -75,8 +77,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -94,6 +99,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 /**
  * 全屏播放页（v1.4.3 循环滑动结构）：
@@ -143,6 +149,10 @@ fun PlayerScreen(
     var calibMode by remember { mutableStateOf(false) }
     /** 歌词编辑对话框：编辑当前歌词文本（LRC 原文或纯文本），保存后生效。 */
     var showLyricEditor by remember { mutableStateOf(false) }
+    // v1.4.39：下载歌词对话框（本地歌无歌词时从歌词页空态/更多菜单进入）
+    var showLyricDownload by remember { mutableStateOf(false) }
+    // v1.4.41：封面编辑对话框（在线搜索匹配 / 相册选图）
+    var showCoverEditor by remember { mutableStateOf(false) }
 
     // ---- v1.4.16：逐句打点模式 ----
     // 打点模式：唱到当前句时点「打点」记录此刻播放位置为该句开唱时刻，
@@ -250,28 +260,116 @@ fun PlayerScreen(
             LrcParser.indexOf(lyrics, position - (lyricOffset * 1000).toLong())
         }
     }
-    // 整页歌词的滚动状态（当前页为奇数 = 歌词页时驱动）
-    val listState = rememberLazyListState()
-    LaunchedEffect(currentLine, pagerState.currentPage) {
-        if (pagerState.currentPage % 2 == 1 &&
-            currentLine >= 0 && !listState.isScrollInProgress
-        ) {
-            listState.animateScrollToItem(currentLine)
+    // v1.4.53/54/55 三轮修复后用户实测仍冻结。v1.4.56 结构性重构定稿：
+    // 根因是「同一 LazyListState 被 Pager 多页共享」——1001 页交替排列下
+    // 所有歌词页共用顶层 listState、封面页共用 previewState；翻页动画期间
+    // 新旧两页短暂共存，加预组合后相邻两页长期共存，同一 state 被多个
+    // LazyColumn 同时持有（Compose 不支持），手势处理错乱 → 歌词滚动冻结。
+    // 主页面 Pager（4 页各含 LazyColumn，翻页后滚动正常）的差异佐证：
+    // 每页 Screen 内部各自 rememberLazyListState，无共享。
+    // 重构：每页独立 state（remember 在页内容里，页面销毁即丢弃），
+    // 跟随 effect 移入页内组合，翻页后新页 state 全新、跟随立即定位当前句。
+    var lyricFollowPausedUntil by remember { mutableStateOf(0L) }
+    /** v1.4.54：暂停窗口到期时 tick 一下，驱动「到期主动恢复」effect */
+    var followResumeTick by remember { mutableStateOf(0) }
+    // v1.4.54：歌词拖动观察者（歌词页 LazyColumn 与封面页预览 LazyColumn 共用）。
+    // Initial pass 旁路观察（不消费事件，滚动仍由 LazyColumn 正常处理）+
+    // 垂直方向过滤——累计垂直位移超过 touchSlop 才刷新暂停窗口。
+    // v1.4.55：累计改为带符号净位移（每次按下重置）+ 水平主导性检查——
+    // 原绝对值累计会把「对角翻页手势」的微小垂直分量也累计进去误刷新暂停
+    // 窗口；净位移 + 「垂直分量明显大于水平分量」双条件，只有真正的垂直
+    // 拖动才刷新窗口，水平/对角翻页绝不触发。
+    fun lyricDragObserver() = Modifier.pointerInput(Unit) {
+        awaitPointerEventScope {
+            val touchSlop = viewConfiguration.touchSlop
+            while (true) {
+                var netDragY = 0f
+                var netDragX = 0f
+                // 等一次按下
+                while (true) {
+                    val down = awaitPointerEvent(PointerEventPass.Initial)
+                    if (down.changes.any { it.pressed }) break
+                    netDragY = 0f
+                    netDragX = 0f
+                }
+                // 按住期间累计带符号净位移。sumOf 无 Float 重载，用 fold
+                while (true) {
+                    val ev = awaitPointerEvent(PointerEventPass.Initial)
+                    val pressed = ev.changes.any { it.pressed }
+                    if (pressed) {
+                        netDragY += ev.changes.fold(0f) { acc, c ->
+                            acc + c.positionChange().y
+                        }
+                        netDragX += ev.changes.fold(0f) { acc, c ->
+                            acc + c.positionChange().x
+                        }
+                        // 垂直净位移超 slop 且明显大于水平分量 → 用户拖歌词
+                        if (abs(netDragY) > touchSlop &&
+                            abs(netDragY) > abs(netDragX) * 1.5f
+                        ) {
+                            lyricFollowPausedUntil = System.currentTimeMillis() + 5000L
+                        }
+                    } else break
+                }
+            }
         }
     }
-    // v1.4.16：打点模式下滚动跟随打点指针（tappingLine 驱动 currentLine，此为保险）
-    LaunchedEffect(tappingLine, tappingMode, pagerState.currentPage) {
-        if (tappingMode && pagerState.currentPage % 2 == 1 && !listState.isScrollInProgress) {
-            runCatching { listState.animateScrollToItem(tappingLine.coerceAtLeast(0)) }
+    // 切歌重置暂停窗口——新歌应立即恢复自动跟随，不被上一首的拖动暂停拖累
+    LaunchedEffect(song) {
+        lyricFollowPausedUntil = 0L
+        followResumeTick = 0
+    }
+    // v1.4.54：暂停窗口到期 → tick 驱动页内「到期主动恢复」effect
+    // （间奏无新句推进时也能及时滚回当前句）
+    LaunchedEffect(lyricFollowPausedUntil) {
+        val remaining = lyricFollowPausedUntil - System.currentTimeMillis()
+        if (remaining > 0) {
+            delay(remaining)
+            followResumeTick++
         }
     }
-    // 封面页歌词预览的滚动状态（当前页为偶数 = 封面页时驱动）
-    val previewState = rememberLazyListState()
-    LaunchedEffect(currentLine, pagerState.currentPage) {
-        if (pagerState.currentPage % 2 == 0 &&
-            currentLine >= 0 && !previewState.isScrollInProgress
-        ) {
-            previewState.animateScrollToItem(currentLine.coerceAtLeast(0), 0)
+    // v1.4.55：自研水平翻页手势——替代 Pager 自带手势（userScrollEnabled=false）。
+    // 根因：Pager 的 scrollable 手势与 LazyColumn 垂直滚动手势竞争，翻页后
+    // 内部手势状态纠缠，导致歌词滚动冻结（Compose 1.6 已知问题）。自研检测
+    // 在 Initial pass 旁路观察水平位移，手指抬起后程序化翻页：
+    // - 水平检测与垂直滚动天然正交，互不干扰
+    // - 翻页发生在手指抬起后，目标页在无手势进行时组合，检测器干净启动
+    // - 不消费任何事件，LazyColumn 滚动完全正常
+    fun pagerSwipeModifier() = Modifier.pointerInput(Unit) {
+        awaitPointerEventScope {
+            val touchSlop = viewConfiguration.touchSlop
+            while (true) {
+                var netDragX = 0f
+                var netDragY = 0f
+                // 等一次按下
+                while (true) {
+                    val down = awaitPointerEvent(PointerEventPass.Initial)
+                    if (down.changes.any { it.pressed }) break
+                    netDragX = 0f
+                    netDragY = 0f
+                }
+                // 按住期间累计净位移
+                while (true) {
+                    val ev = awaitPointerEvent(PointerEventPass.Initial)
+                    if (!ev.changes.any { it.pressed }) break
+                    netDragX += ev.changes.fold(0f) { acc, c ->
+                        acc + c.positionChange().x
+                    }
+                    netDragY += ev.changes.fold(0f) { acc, c ->
+                        acc + c.positionChange().y
+                    }
+                }
+                // 手指抬起后判定：水平净位移超 slop 且明显大于垂直分量 → 翻页
+                if (abs(netDragX) > touchSlop && abs(netDragX) > abs(netDragY) * 1.5f) {
+                    val target = if (netDragX < 0) pagerState.currentPage + 1
+                    else pagerState.currentPage - 1
+                    if (target in 0 until pagerState.pageCount) {
+                        scope.launch {
+                            pagerState.animateScrollToPage(target)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -454,6 +552,18 @@ fun PlayerScreen(
                                     onDownload()
                                 }
                             )
+                            // v1.4.41：封面编辑（在线搜索匹配 / 相册选图自定义）
+                            // v1.4.42：移到「下载」后、「歌词校准」前
+                            DropdownMenuItem(
+                                text = { Text("封面编辑") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.AddPhotoAlternate, null)
+                                },
+                                onClick = {
+                                    menuOpen = false
+                                    showCoverEditor = true
+                                }
+                            )
                             // v1.4.25：歌词校准入口（原常驻校准行收进菜单——不常用，
                             // 收起来页面更简洁）。进入后歌词页顶部显示校准行/打点工具栏
                             DropdownMenuItem(
@@ -487,6 +597,19 @@ fun PlayerScreen(
                                     scrollToLyricPage()
                                 }
                             )
+                            // v1.4.39：下载歌词（在线搜词：歌名 或 歌名+歌手；
+                            // 本地歌嵌文件，在线歌存缓存——所有歌统一入口）
+                            DropdownMenuItem(
+                                text = { Text("下载歌词") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Lyrics, null)
+                                },
+                                onClick = {
+                                    menuOpen = false
+                                    showLyricDownload = true
+                                    scrollToLyricPage()
+                                }
+                            )
                             // v1.4.17：保存校准歌词（有校准数据时显示）——
                             // 本地歌曲嵌入文件，以后播放无需重新调整
                             if (lyrics.isNotEmpty() &&
@@ -507,11 +630,19 @@ fun PlayerScreen(
             }
 
             // ---- 循环主体：偶数页=封面页，奇数页=歌词页，交替排列无限划 ----
+            // v1.4.55：关闭 Pager 自带手势（userScrollEnabled=false），翻页改由
+            // pagerSwipeModifier 自研水平检测驱动（挂在 Pager 容器上）——消除
+            // Pager scrollable 与 LazyColumn 垂直滚动的手势竞争。
+            // v1.4.56：去掉 beyondBoundsPageCount 预组合——每页独立 state 后
+            // 不再需要；保持默认单页组合，翻页动画期间新旧页短暂共存但 state
+            // 各自独立，无共享冲突。
             HorizontalPager(
                 state = pagerState,
+                userScrollEnabled = false,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    .then(pagerSwipeModifier())
             ) { page ->
                 if (page % 2 == 0) {
                     // 封面页：大封面 + 歌词预览（歌名/歌手在顶栏，点预览进歌词页）
@@ -532,11 +663,23 @@ fun PlayerScreen(
                         Spacer(Modifier.height(16.dp))
                         // 歌词预览：多行自动滚动跟随播放，点击进整页歌词
                         if (lyrics.isNotEmpty()) {
+                            // v1.4.56：封面页预览同样独立 state + 页内跟随
+                            val previewListState = rememberLazyListState()
+                            LaunchedEffect(currentLine, lyricFollowPausedUntil) {
+                                if (currentLine >= 0 && !previewListState.isScrollInProgress &&
+                                    System.currentTimeMillis() >= lyricFollowPausedUntil
+                                ) {
+                                    previewListState.animateScrollToItem(
+                                        currentLine.coerceAtLeast(0), 0
+                                    )
+                                }
+                            }
                             LazyColumn(
-                                state = previewState,
+                                state = previewListState,
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxWidth()
+                                    .then(lyricDragObserver())
                                     .clickable {
                                         scope.launch {
                                             pagerState.animateScrollToPage(pagerState.currentPage + 1)
@@ -725,11 +868,57 @@ fun PlayerScreen(
                                 .fillMaxWidth()
                         ) {
                             when {
-                                lyrics.isNotEmpty() -> LazyColumn(
-                                    state = listState,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentPadding = PaddingValues(vertical = 24.dp)
-                                ) {
+                                lyrics.isNotEmpty() -> {
+                                    // v1.4.56：每页独立 LazyListState——remember 在页内容
+                                    // 里，页面销毁即丢弃；翻页后新页 state 全新，无跨页
+                                    // 共享（共享 state 被多 LazyColumn 同时持有是手势
+                                    // 冻结的根因）。跟随 effect 也在页内，只驱动本页。
+                                    val pageListState = rememberLazyListState()
+                                    // 常规跟随：当前句推进时滚动（暂停窗口内不跟随）
+                                    LaunchedEffect(currentLine, lyricFollowPausedUntil) {
+                                        if (currentLine >= 0 && !pageListState.isScrollInProgress &&
+                                            System.currentTimeMillis() >= lyricFollowPausedUntil
+                                        ) {
+                                            pageListState.animateScrollToItem(
+                                                currentLine.coerceIn(
+                                                    0, (lyrics.size - 1).coerceAtLeast(0)
+                                                ),
+                                                0
+                                            )
+                                        }
+                                    }
+                                    // 暂停窗口到期 → 主动滚回当前句（间奏无新句也恢复）
+                                    LaunchedEffect(followResumeTick) {
+                                        if (followResumeTick > 0 && currentLine >= 0 &&
+                                            !pageListState.isScrollInProgress
+                                        ) {
+                                            pageListState.animateScrollToItem(
+                                                currentLine.coerceIn(
+                                                    0, (lyrics.size - 1).coerceAtLeast(0)
+                                                ),
+                                                0
+                                            )
+                                        }
+                                    }
+                                    // 打点模式跟随打点指针
+                                    LaunchedEffect(tappingLine, tappingMode) {
+                                        if (tappingMode && !pageListState.isScrollInProgress &&
+                                            System.currentTimeMillis() >= lyricFollowPausedUntil
+                                        ) {
+                                            runCatching {
+                                                pageListState.animateScrollToItem(
+                                                    tappingLine.coerceAtLeast(0)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    LazyColumn(
+                                        state = pageListState,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .then(lyricDragObserver()),
+                                        contentPadding = PaddingValues(vertical = 24.dp)
+                                    ) {
                                     items(lyrics.size) { i ->
                                         val isTappingTarget = tappingMode && i == tappingLine
                                         val isTapped = tappingMode && tappingMap.containsKey(i)
@@ -757,6 +946,7 @@ fun PlayerScreen(
                                                 .padding(vertical = 10.dp)
                                         )
                                     }
+                                    }
                                 }
 
                                 lyricLoading -> Box(
@@ -773,12 +963,27 @@ fun PlayerScreen(
                                     Modifier.fillMaxSize(),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Text(
-                                        text = "暂无歌词",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            .copy(alpha = 0.55f)
-                                    )
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = "暂无歌词",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                .copy(alpha = 0.55f)
+                                        )
+                                        // v1.4.39：无歌词 → 引导在线下载（所有歌统一）
+                                        if (current != null) {
+                                            Spacer(Modifier.height(12.dp))
+                                            TextButton(onClick = { showLyricDownload = true }) {
+                                                Icon(
+                                                    Icons.Filled.Lyrics,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Spacer(Modifier.size(4.dp))
+                                                Text("下载歌词")
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -923,6 +1128,23 @@ fun PlayerScreen(
                 vm.refreshLyrics()
                 showLyricEditor = false
             }
+        )
+    }
+
+    // ---- v1.4.39：下载歌词对话框（本地歌在线搜词） ----
+    if (showLyricDownload && current != null) {
+        com.solara.music.ui.components.LyricDownloadDialog(
+            song = current,
+            onDismiss = { showLyricDownload = false },
+            onDownloaded = { vm.refreshLyrics() }
+        )
+    }
+
+    // ---- v1.4.41：封面编辑对话框（在线搜索 / 相册选图） ----
+    if (showCoverEditor && current != null) {
+        com.solara.music.ui.components.CoverEditorDialog(
+            song = current,
+            onDismiss = { showCoverEditor = false }
         )
     }
 }

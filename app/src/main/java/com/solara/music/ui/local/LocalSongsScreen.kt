@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.ImageSearch
+import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
@@ -52,6 +53,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.solara.music.data.DownloadManager
 import com.solara.music.data.LocalCoverExtractor
+import com.solara.music.data.LyricRepository
 import com.solara.music.data.Song
 import com.solara.music.data.Store
 import com.solara.music.data.TagEmbedder
@@ -96,7 +98,8 @@ private data class PendingAllFiles(
 fun LocalSongsScreen(
     onBack: () -> Unit,
     onAddToPlaylist: (Song) -> Unit = {},
-    onShowMessage: (String) -> Unit = {}
+    onShowMessage: (String) -> Unit = {},
+    onLyricUpdated: () -> Unit = {}
 ) {
     val songs by Store.downloads.collectAsState()
     val favorites by Store.favorites.collectAsState()
@@ -115,6 +118,10 @@ fun LocalSongsScreen(
     // v1.4.0：批量匹配在线封面
     var matching by remember { mutableStateOf(false) }
     var matchProgress by remember { mutableStateOf(0 to 0) } // done to total
+    // v1.4.39：下载歌词（单曲对话框 + 批量）
+    var lyricTarget by remember { mutableStateOf<Song?>(null) }
+    var lyricBatching by remember { mutableStateOf(false) }
+    var lyricBatchProgress by remember { mutableStateOf(0 to 0) } // done to total
     // v1.4.26：多选批量（收藏 / 加入歌单 / 移出列表）
     val select = rememberMultiSelectState()
     var showBatchPlaylist by remember { mutableStateOf(false) }
@@ -348,6 +355,61 @@ fun LocalSongsScreen(
         }
     }
 
+    /**
+     * v1.4.39：批量下载歌词。
+     * 逐首：跳过已有歌词（缓存/内嵌/伴生 .lrc）→ 自动精确匹配（歌名+歌手）→
+     * 取词 → 缓存 + 嵌入文件（MP3 USLT / FLAC 伴生 .lrc）。
+     * 完成后回调刷新播放页歌词显示。
+     */
+    fun runBatchLyrics(onAllDone: () -> Unit) {
+        if (lyricBatching) return
+        val targets = songs.filter { LocalCoverExtractor.isLocalSong(it) }
+        if (targets.isEmpty()) {
+            scanToast = "没有本地歌曲"
+            return
+        }
+        lyricBatching = true
+        lyricBatchProgress = 0 to targets.size
+        scope.launch {
+            var ok = 0
+            var skip = 0
+            var fail = 0
+            targets.forEachIndexed { i, song ->
+                lyricBatchProgress = i to targets.size
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        // 已有歌词（缓存/内嵌/伴生）跳过
+                        if (LyricRepository.hasLyric(context.applicationContext, song)) {
+                            return@runCatching -1
+                        }
+                        // 自动精确匹配（歌名+歌手）→ 取词 → 缓存+嵌入
+                        val hit = LyricRepository.matchLyricOnline(song)
+                            ?: return@runCatching 0
+                        val pair = LyricRepository.downloadLyric(
+                            context.applicationContext, song, hit
+                        ) ?: return@runCatching 0
+                        1
+                    }.getOrDefault(0).let { r ->
+                        when (r) {
+                            -1 -> skip++
+                            1 -> ok++
+                            else -> fail++
+                        }
+                    }
+                }
+            }
+            lyricBatchProgress = targets.size to targets.size
+            lyricBatching = false
+            scanToast = buildString {
+                append("歌词下载完成：成功 $ok 首")
+                if (skip > 0) append("，已有跳过 $skip 首")
+                if (fail > 0) append("，未匹配 $fail 首")
+                append("\n（已嵌入文件，其他播放器也能显示）")
+            }
+            onAllDone()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -468,6 +530,21 @@ fun LocalSongsScreen(
                             runMatchCovers()
                         }
                     )
+                    // v1.4.39：批量下载歌词（自动匹配歌名+歌手 → 缓存+嵌入文件）
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                if (lyricBatching) "下载歌词中 ${lyricBatchProgress.first}/${lyricBatchProgress.second}…"
+                                else "批量下载歌词"
+                            )
+                        },
+                        leadingIcon = { Icon(Icons.Filled.Lyrics, contentDescription = null) },
+                        enabled = !lyricBatching && songs.isNotEmpty(),
+                        onClick = {
+                            menuOpen = false
+                            runBatchLyrics(onLyricUpdated)
+                        }
+                    )
                 }
                 }
             }
@@ -503,6 +580,7 @@ fun LocalSongsScreen(
                         onAddToPlaylist = { onAddToPlaylist(song) },
                         onRemove = { pendingDelete = song },
                         onRename = { pendingRename = song },
+                        onDownloadLyric = { lyricTarget = song },
                         selectionMode = select.active,
                         selected = select.isSelected(song),
                         onSelect = { select.toggle(song) },
@@ -521,6 +599,19 @@ fun LocalSongsScreen(
             text = { Text(msg) },
             confirmButton = {
                 TextButton(onClick = { scanToast = null }) { Text("知道了") }
+            }
+        )
+    }
+
+    // v1.4.39：单曲「下载歌词」对话框（搜索词可编辑：歌名 或 歌名+歌手）
+    lyricTarget?.let { target ->
+        com.solara.music.ui.components.LyricDownloadDialog(
+            song = target,
+            onDismiss = { lyricTarget = null },
+            onDownloaded = { embedded ->
+                scanToast = if (embedded) "歌词已下载并嵌入文件，其他播放器也能显示"
+                else "歌词已下载（嵌入文件失败，已存缓存）"
+                onLyricUpdated()
             }
         )
     }

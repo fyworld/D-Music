@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 
 package com.solara.music.ui
 
@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
@@ -16,6 +17,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
@@ -51,6 +54,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -72,6 +76,7 @@ import com.solara.music.data.Song
 import com.solara.music.data.Store
 import com.solara.music.player.PlayerManager
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.snapshotFlow
 import com.solara.music.ui.about.AboutScreen
 import com.solara.music.ui.components.AddToPlaylistSheet
 import com.solara.music.ui.components.CoverImage
@@ -99,6 +104,24 @@ fun SolaraApp() {
     var tab by rememberSaveable { mutableStateOf(savedUi?.first ?: 0) }
     var showPlayer by remember { mutableStateOf(savedUi?.third == true) }
     var meMenuOpen by remember { mutableStateOf(false) }
+
+    // v1.4.51：主页面左右滑动切换——Pager 与底部导航双向同步。
+    // tab 是唯一事实源：导航点击 animateScrollToPage，滑动完成
+    // snapshotFlow 写回 tab（rememberSaveable 保证恢复后一致）。
+    val pagerState = rememberPagerState(
+        initialPage = (savedUi?.first ?: 0).coerceIn(0, 3)
+    ) { 4 }
+    val pagerScope = rememberCoroutineScope()
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.settledPage }.collect { page ->
+            if (page != tab) tab = page
+        }
+    }
+    LaunchedEffect(tab, pagerState) {
+        if (tab != pagerState.settledPage && !pagerState.isScrollInProgress) {
+            pagerScope.launch { pagerState.animateScrollToPage(tab) }
+        }
+    }
 
     // "我的"页面：null 表示未进入；进入后显示设置或下载管理
     var mePage by rememberSaveable { mutableStateOf<String?>(savedUi?.second) }
@@ -317,41 +340,49 @@ fun SolaraApp() {
                     MePage.LOCAL_SONGS.name -> LocalSongsScreen(
                         onBack = { mePage = null },
                         onAddToPlaylist = { playlistTarget = it },
-                        onShowMessage = showMessage
+                        onShowMessage = showMessage,
+                        onLyricUpdated = { playerVm.notifyLyricUpdated() }
                     )
                     MePage.ABOUT.name -> AboutScreen(onBack = { mePage = null })
                     else -> SettingsScreen()
                 }
             } else {
-                when (tab) {
-                    0 -> ExploreScreen(
-                        vm = exploreVm,
-                        onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it },
-                        onShowMessage = showMessage
-                    )
-                    1 -> SearchScreen(
-                        vm = searchVm,
-                        onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it },
-                        onShowMessage = showMessage
-                    )
-                    2 -> LibraryScreen(
-                        onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it },
-                        onShowMessage = showMessage
-                    )
-                    3 -> RecentScreen(
-                        onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it },
-                        onShowMessage = showMessage
-                    )
-                    else -> ExploreScreen(
-                        vm = exploreVm,
-                        onAddToPlaylist = { playlistTarget = it },
-                        onDownload = { downloadTarget = it },
-                        onShowMessage = showMessage
-                    )
+                // v1.4.51：主页面 HorizontalPager——左右滑动切换，
+                // 与底部导航双向同步（tab 是唯一事实源）
+                // v1.4.52：beyondBoundsPageCount=1 预组合左右相邻页——
+                // 默认只组合当前页，滑到一半才现场构建相邻页 UI 树
+                // （掉帧卡顿根因）；预组合后滑动全程无首次组合开销。
+                // 注意：foundation 1.6（BOM 2024.02.00）参数名是
+                // beyondBoundsPageCount，1.7 起才改名 beyondViewportPageCount
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxSize(),
+                    beyondBoundsPageCount = 1
+                ) { page ->
+                    when (page) {
+                        0 -> ExploreScreen(
+                            vm = exploreVm,
+                            onAddToPlaylist = { playlistTarget = it },
+                            onDownload = { downloadTarget = it },
+                            onShowMessage = showMessage
+                        )
+                        1 -> SearchScreen(
+                            vm = searchVm,
+                            onAddToPlaylist = { playlistTarget = it },
+                            onDownload = { downloadTarget = it },
+                            onShowMessage = showMessage
+                        )
+                        2 -> LibraryScreen(
+                            onAddToPlaylist = { playlistTarget = it },
+                            onDownload = { downloadTarget = it },
+                            onShowMessage = showMessage
+                        )
+                        3 -> RecentScreen(
+                            onAddToPlaylist = { playlistTarget = it },
+                            onDownload = { downloadTarget = it },
+                            onShowMessage = showMessage
+                        )
+                    }
                 }
             }
         }

@@ -21,8 +21,23 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private var lastKey: String? = null
 
+    // v1.4.39：歌词全局修订号——「下载歌词」（本地歌曲页/播放页/批量）成功后
+    // bump，播放页 collect 到变化即强制重取当前歌歌词（缓存已更新，直接命中）
+    private val lyricRevision = MutableStateFlow(0)
+
+    /** 歌词数据有外部更新（下载歌词/批量下载）时调用，触发播放页刷新。 */
+    fun notifyLyricUpdated() {
+        lyricRevision.value++
+    }
+
     init {
         viewModelScope.launch {
+            // v1.4.39：监听修订号——下载歌词后强制重取（lastKey 去重会挡住同歌重取）
+            launch {
+                lyricRevision.collect {
+                    if (it > 0) refreshLyrics()
+                }
+            }
             PlayerManager.currentSong.collect { song ->
                 if (song == null) {
                     lastKey = null

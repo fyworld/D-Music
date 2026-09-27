@@ -53,26 +53,81 @@ object LyricRepository {
         if (!LocalCoverExtractor.isLocalSong(song)) {
             return runCatching { MusicApi.fetchLyric(song) }.getOrNull()
         }
-        // 本地歌曲：按「歌手 歌名」搜索精确匹配，再查匹配结果的歌词
-        val query = buildString {
-            if (song.artistName.isNotBlank() && song.artistName != "未知歌手") {
-                append(song.artistName).append(' ')
-            }
-            append(song.name)
-        }.trim()
+        // 本地歌曲：自动精确匹配后查词
+        val hit = matchLyricOnline(song) ?: return null
+        return runCatching { MusicApi.fetchLyric(hit) }.getOrNull()
+    }
+
+    /**
+     * v1.4.39：本地歌曲自动精确匹配在线歌曲（歌名+歌手搜索 → 歌名相等且歌手互含）。
+     * 供取词链路与「下载歌词」共用；无匹配返回 null。
+     */
+    suspend fun matchLyricOnline(song: Song): Song? {
+        val query = defaultSearchQuery(song)
         if (query.isBlank()) return null
         val src = Store.settings.value.source.ifBlank { "netease" }
         val results = runCatching { MusicApi.search(src, query, page = 1, count = 10) }
             .getOrNull() ?: return null
         // 精确匹配：歌名相等且歌手互含（与封面匹配同策略）
-        val hit = results.firstOrNull { r ->
+        return results.firstOrNull { r ->
             r.name == song.name &&
                 (song.artistName.isBlank() ||
                     r.artistName.contains(song.artistName, ignoreCase = true) ||
                     song.artistName.contains(r.artistName, ignoreCase = true))
-        } ?: return null
-        return runCatching { MusicApi.fetchLyric(hit) }.getOrNull()
+        }
     }
+
+    /**
+     * v1.4.39：按搜索词搜索歌词候选（「下载歌词」对话框用）。
+     * query 为空时回退默认搜索词（歌手 + 歌名）。
+     */
+    suspend fun searchLyricCandidates(song: Song, query: String): List<Song> {
+        val q = query.trim().ifBlank { defaultSearchQuery(song) }
+        if (q.isBlank()) return emptyList()
+        val src = Store.settings.value.source.ifBlank { "netease" }
+        return runCatching { MusicApi.search(src, q, page = 1, count = 20) }
+            .getOrDefault(emptyList())
+    }
+
+    /**
+     * v1.4.39：下载指定候选的歌词并固化到本地歌曲——
+     * 写磁盘缓存（本 App 显示）+ 嵌入音频文件（MP3 USLT / FLAC 伴生 .lrc，
+     * 跨播放器生效）。嵌入失败不影响缓存，返回 embedded=false。
+     */
+    suspend fun downloadLyric(
+        context: Context,
+        song: Song,
+        candidate: Song
+    ): Pair<String, Boolean>? = withContext(Dispatchers.IO) {
+        val lrc = runCatching { MusicApi.fetchLyric(candidate) }.getOrNull()
+            ?.takeIf { it.isNotBlank() } ?: return@withContext null
+        Store.saveCachedLyric(song, lrc)
+        val embedded = if (LocalCoverExtractor.isLocalSong(song)) {
+            runCatching { TagEmbedder.embedLyricInto(context, song, lrc) }.getOrDefault(false)
+        } else false
+        lrc to embedded
+    }
+
+    /**
+     * v1.4.39：歌曲是否已有歌词（缓存 / 内嵌标签 / 伴生 .lrc 任一）。
+     * 供「批量下载歌词」跳过已有歌词的歌曲；在线匹配不在此列。
+     */
+    suspend fun hasLyric(context: Context, song: Song): Boolean = withContext(Dispatchers.IO) {
+        if (!Store.cachedLyric(song).isNullOrBlank()) return@withContext true
+        if (LocalCoverExtractor.isLocalSong(song)) {
+            val embedded = readEmbeddedLyric(context, song)
+                ?: readSidecarLrc(context, song)
+            !embedded.isNullOrBlank()
+        } else false
+    }
+
+    /** 默认搜索词：歌手 + 歌名（歌手未知时只用歌名）。 */
+    private fun defaultSearchQuery(song: Song): String = buildString {
+        if (song.artistName.isNotBlank() && song.artistName != "未知歌手") {
+            append(song.artistName).append(' ')
+        }
+        append(song.name)
+    }.trim()
 
     /** 读音频文件内嵌歌词（MP3 的 ID3v2 USLT 帧），失败返回 null。 */
     private fun readEmbeddedLyric(context: Context, song: Song): String? = runCatching {

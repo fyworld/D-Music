@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -104,11 +105,32 @@ fun CoverImage(song: Song?, size: Dp, corner: Dp = 10.dp) {
     // v1.4.0：封面数据变化（批量匹配/重命名）时触发整棵重组刷新
     val coverRev by LocalCoverExtractor.revision.collectAsState()
 
+    // v1.4.41：用户自定义封面（「封面编辑」本地选图）——优先级最高，
+    // 本地/在线歌都支持；文件在 App 专属目录，卸载即清
+    var customBitmap by remember(song?.source, song?.id, coverRev) {
+        mutableStateOf<android.graphics.Bitmap?>(null)
+    }
+    var customChecked by remember(song?.source, song?.id, coverRev) { mutableStateOf(false) }
+    if (song != null && !customChecked) {
+        LaunchedEffect(song.source, song.id, coverRev) {
+            customBitmap = withContext(Dispatchers.IO) {
+                Store.customCoverFile(context.applicationContext, song)?.let { f ->
+                    runCatching {
+                        android.graphics.BitmapFactory.decodeFile(f.absolutePath)
+                    }.getOrNull()
+                }
+            }
+            customChecked = true
+        }
+    }
+
     // 在线：封面 URL 缓存
     // v1.4.25：先读磁盘持久化（Store.onlineCoverUrl）——冷启动不再每首歌
     // 联网调 API 解析 URL，直接命中 Coil 磁盘图片缓存，离线也有封面；
     // 磁盘没有才调 API，拿到后写盘供下次使用
-    var url by remember(song?.source, song?.picId, song?.id) {
+    // v1.4.42：remember 键加 coverRev——封面编辑应用新 URL 后 bumpRevision
+    // 触发重读；否则 url 状态保留旧值，封面不刷新
+    var url by remember(song?.source, song?.picId, song?.id, coverRev) {
         val s = song
         mutableStateOf(
             if (s != null && !isLocal) {
@@ -151,6 +173,8 @@ fun CoverImage(song: Song?, size: Dp, corner: Dp = 10.dp) {
 
     if (!isLocal && url == null && song != null) {
         LaunchedEffect(song.source, song.id, song.picId) {
+            // v1.4.41：有自定义封面时不再调 API
+            if (customBitmap != null) return@LaunchedEffect
             val fetched = MusicApi.fetchPicUrl(song)
             if (fetched != null) {
                 val key = "${song.source}:${song.picId.ifBlank { song.id }}"
@@ -197,6 +221,13 @@ fun CoverImage(song: Song?, size: Dp, corner: Dp = 10.dp) {
     ) {
         val bmp = if (isLocal) localBitmap else null
         when {
+            // v1.4.41：自定义封面最优先（「封面编辑」用户选的图）
+            customBitmap != null -> Image(
+                bitmap = customBitmap!!.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
             bmp != null -> Image(
                 bitmap = bmp.asImageBitmap(),
                 contentDescription = null,
@@ -256,6 +287,7 @@ fun SongRow(
     onRemove: (() -> Unit)? = null,
     onDownload: (() -> Unit)? = null,
     onRename: (() -> Unit)? = null,
+    onDownloadLyric: (() -> Unit)? = null,
     selectionMode: Boolean = false,
     selected: Boolean = false,
     onSelect: (() -> Unit)? = null,
@@ -342,6 +374,15 @@ fun SongRow(
                             text = { Text("下载") },
                             leadingIcon = { Icon(Icons.Filled.Download, null) },
                             onClick = { menuOpen = false; onDownload() }
+                        )
+                    }
+                    if (onDownloadLyric != null) {
+                        DropdownMenuItem(
+                            text = { Text("下载歌词") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.Lyrics, null)
+                            },
+                            onClick = { menuOpen = false; onDownloadLyric() }
                         )
                     }
                     if (onRename != null) {

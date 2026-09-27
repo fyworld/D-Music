@@ -100,9 +100,23 @@ class PlaybackService : MediaSessionService() {
                 )
                 // 缓存 key 由 MediaItem.customCacheKey 提供（带音质）
                 .setCacheKeyFactory { dataSpec -> dataSpec.key ?: dataSpec.uri.toString() }
+            // v1.4.43：本地文件绕过播放缓存——仅在线流（http/https）走缓存。
+            // 本地文件过缓存除了双倍磁盘 IO，更会引入坏缓存：写缓存途中
+            // 进程被杀留半写 span、封面/歌词嵌入重写文件后旧缓存整体过期；
+            // 之后播放命中坏段，解码器把坏字节静默成静音样本（不报错）——
+            // "播到一半无声、进度条照走、拖动跳过坏段才恢复"（实测清缓存
+            // 即恢复）。本地直读从根上消除该路径。
+            @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+            val routingFactory = androidx.media3.datasource.DataSource.Factory {
+                SchemeRoutingDataSource(
+                    cached = cacheFactory.createDataSource(),
+                    direct = androidx.media3.datasource.DefaultDataSource.Factory(this)
+                        .createDataSource()
+                )
+            }
             playerBuilder
                 .setMediaSourceFactory(
-                    androidx.media3.exoplayer.source.DefaultMediaSourceFactory(cacheFactory)
+                    androidx.media3.exoplayer.source.DefaultMediaSourceFactory(routingFactory)
                 )
                 .build()
         } else {

@@ -72,6 +72,7 @@ fun ExploreScreen(
     val isLoading by vm.isLoading.collectAsState()
     val error by vm.error.collectAsState()
     val toast by vm.toast.collectAsState()
+    val bgCover by vm.bgCover.collectAsState()
     val favorites by Store.favorites.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -128,6 +129,7 @@ fun ExploreScreen(
             ExploreRadarCard(
                 genre = genre,
                 isLoading = isLoading,
+                bgCover = bgCover,
                 onExplore = { vm.explore() },
                 modifier = Modifier.fillMaxWidth()
             )
@@ -211,7 +213,11 @@ fun ExploreScreen(
                         SongRow(
                             song = song,
                             isFavorite = favorites.any { it.sameAs(song) },
-                            onClick = { PlayerManager.setQueue(results, i) },
+                            onClick = {
+                                // v1.4.50：点击歌时卡片背景同步换成这首歌的封面
+                                vm.setBgFromSong(song)
+                                PlayerManager.setQueue(results, i)
+                            },
                             onToggleFavorite = { Store.toggleFavorite(song) },
                             onAddToPlaylist = { onAddToPlaylist(song) },
                             onRemove = { vm.removeResult(i) },
@@ -269,12 +275,15 @@ fun ExploreScreen(
 }
 
 /**
- * 雷达主卡片：渐变背景 + 大按钮，探索中显示进度。
+ * 雷达主卡片：v1.4.45 起背景为上次探索结果中随机一首的封面（每次探索
+ * 都换）+ 深色遮罩保证文字/按钮可读；无封面时退回主题渐变。
+ * 探索中显示进度。
  */
 @Composable
 private fun ExploreRadarCard(
     genre: String?,
     isLoading: Boolean,
+    bgCover: String?,
     onExplore: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -289,19 +298,42 @@ private fun ExploreRadarCard(
                     )
                 )
             )
-            .padding(24.dp)
     ) {
+        // v1.4.48：封面背景层（有封面时覆盖渐变）——遮罩 25% 封面清晰；
+        // 前景随封面转白（图标/文字白色、按钮半透明白底黑字）更协调
+        if (bgCover != null) {
+            coil.compose.AsyncImage(
+                model = bgCover,
+                contentDescription = null,
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier.matchParentSize()
+            )
+            // 淡遮罩：轻微压暗，封面保持清晰
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.25f))
+            )
+        }
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(
-                imageVector = Icons.Filled.Radar,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(56.dp)
-            )
-            Spacer(Modifier.height(12.dp))
+            // v1.4.49：有封面时不再显示雷达图标（封面即视觉主体）；
+            // v1.4.50：用等高占位保持卡片高度与有图标时一致
+            if (bgCover == null) {
+                Icon(
+                    imageVector = Icons.Filled.Radar,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(56.dp)
+                )
+                Spacer(Modifier.height(12.dp))
+            } else {
+                Spacer(Modifier.height(68.dp))
+            }
             Text(
                 text = when {
                     isLoading -> "雷达扫描中…"
@@ -309,7 +341,8 @@ private fun ExploreRadarCard(
                     else -> "随机风格 · 随机音源 · 30 首新歌"
                 },
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
+                color = if (bgCover != null) androidx.compose.ui.graphics.Color.White
+                else MaterialTheme.colorScheme.onSurface
             )
             Spacer(Modifier.height(16.dp))
             Button(
@@ -317,15 +350,23 @@ private fun ExploreRadarCard(
                 enabled = !isLoading,
                 shape = RoundedCornerShape(28.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
+                    // v1.4.49：有封面时按钮 40% 半透明白底黑字（磨砂感），
+                    // 无封面保持主题色
+                    containerColor = if (bgCover != null)
+                        androidx.compose.ui.graphics.Color.White.copy(alpha = 0.4f)
+                    else MaterialTheme.colorScheme.primary,
+                    contentColor = if (bgCover != null)
+                        androidx.compose.ui.graphics.Color.Black
+                    else MaterialTheme.colorScheme.onPrimary
                 ),
-                modifier = Modifier.fillMaxWidth()
+                // v1.4.49：按钮按内容自适应宽度（一行），不再通栏/定宽
+                modifier = Modifier
             ) {
                 if (isLoading) {
                     CircularProgressIndicator(
                         strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = if (bgCover != null) androidx.compose.ui.graphics.Color.Black
+                        else MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(Modifier.size(8.dp))

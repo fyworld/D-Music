@@ -11,8 +11,8 @@ android {
         applicationId = "com.solara.music"
         minSdk = 24
         targetSdk = 34
-        versionCode = 52
-        versionName = "1.4.38"
+        versionCode = 71
+        versionName = "1.4.57"
     }
 
     // v1.4.18：双版本——full（标准版，含打赏）/ lite（纯净版，无打赏）。
@@ -69,8 +69,10 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     implementation("androidx.navigation:navigation-compose:2.7.7")
-    implementation("androidx.media3:media3-exoplayer:1.2.1")
-    implementation("androidx.media3:media3-session:1.2.1")
+    // v1.4.43：Media3 1.2.1 → 1.3.1——修复多个 CacheDataSource/SimpleCache
+    // 缺陷（缓存写坏概率下降），音频管线 bug 一并修复
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-session:1.3.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.6.0")
     // MP3 ID3v2 标签读写：下载后嵌入封面/歌词到文件

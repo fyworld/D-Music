@@ -70,6 +70,9 @@ object Store {
     // 在线歌曲封面 URL 磁盘缓存（v1.4.25：key=source:picId → 封面直链，
     // 冷启动免 API 解析直接命中 Coil 磁盘图片缓存，离线也有封面）
     private const val KEY_ONLINE_COVERS = "online_covers"
+    // 用户自定义封面（v1.4.41：key=source:id → App 专属目录封面文件名，
+    // 「封面编辑」本地选图应用后持久化，优先级最高）
+    private const val KEY_CUSTOM_COVERS = "custom_covers"
     // 歌词磁盘缓存（v1.4.9：key=source:id → LRC 文本，离线可读）
     private const val KEY_LYRIC_CACHE = "lyric_cache"
     // 按歌歌词偏移（v1.4.15：key=source:id → 偏移秒数，每首歌独立校准）
@@ -764,6 +767,20 @@ object Store {
         prefs.edit().putString(KEY_LOCAL_COVERS, o.toString()).apply()
     }
 
+    /**
+     * 清除本地歌曲匹配到的在线封面 URL（v1.4.42）：
+     * 「封面编辑」嵌入新封面后调用——URL 缓存优先级高于内嵌封面，
+     * 不清掉会挡住用户新选的封面。
+     */
+    fun clearLocalCoverUrl(song: Song) {
+        if (song.source != "local" || !song.id.startsWith("local:")) return
+        val fileName = song.id.removePrefix("local:")
+        val o = readLocalCovers()
+        if (!o.has(fileName)) return
+        o.remove(fileName)
+        prefs.edit().putString(KEY_LOCAL_COVERS, o.toString()).apply()
+    }
+
     // ---------- 歌词磁盘缓存（v1.4.9：离线可读） ----------
 
     /** 读取歌曲缓存的歌词文本（LRC），无缓存返回 null。 */
@@ -882,6 +899,59 @@ object Store {
     private fun readOnlineCovers(): org.json.JSONObject =
         runCatching {
             org.json.JSONObject(prefs.getString(KEY_ONLINE_COVERS, null) ?: "{}")
+        }.getOrDefault(org.json.JSONObject())
+
+    // ---------- 用户自定义封面（v1.4.41：「封面编辑」本地选图） ----------
+
+    /**
+     * 读取歌曲的自定义封面文件（App 专属目录 custom_covers/ 下），
+     * 未设置返回 null。任何歌（本地/在线）都可设。
+     */
+    fun customCoverFile(context: Context, song: Song): java.io.File? {
+        val key = "${song.source}:${song.id}"
+        val name = readCustomCovers().optString(key).takeIf { it.isNotBlank() } ?: return null
+        val dir = java.io.File(
+            context.applicationContext.getExternalFilesDir(null),
+            "custom_covers"
+        )
+        val f = java.io.File(dir, name)
+        return if (f.exists()) f else null
+    }
+
+    /**
+     * 保存用户为歌曲选择的自定义封面（拷贝到 App 专属目录持久保存）。
+     * 返回保存后的封面文件；失败返回 null。
+     */
+    fun saveCustomCover(context: Context, song: Song, bytes: ByteArray): java.io.File? {
+        if (bytes.isEmpty()) return null
+        val ctx = context.applicationContext
+        return runCatching {
+            val dir = java.io.File(ctx.getExternalFilesDir(null), "custom_covers")
+            if (!dir.exists()) dir.mkdirs()
+            // 文件名含 source:id 防冲突；固定 .jpg（已按 JPEG 压缩存储）
+            val safeKey = "${song.source}_${song.id}"
+                .replace(Regex("[^A-Za-z0-9_\\-]"), "_")
+            val f = java.io.File(dir, "$safeKey.jpg")
+            java.io.FileOutputStream(f).use { it.write(bytes) }
+            val o = readCustomCovers()
+            o.put("${song.source}:${song.id}", f.name)
+            prefs.edit().putString(KEY_CUSTOM_COVERS, o.toString()).apply()
+            f
+        }.getOrNull()
+    }
+
+    /** 清除歌曲的自定义封面（恢复在线/本地自动匹配）。 */
+    fun clearCustomCover(song: Song) {
+        val key = "${song.source}:${song.id}"
+        val o = readCustomCovers()
+        if (!o.has(key)) return
+        o.remove(key)
+        prefs.edit().putString(KEY_CUSTOM_COVERS, o.toString()).apply()
+    }
+
+    private fun readCustomCovers(): org.json.JSONObject =
+        runCatching {
+            org.json.JSONObject(prefs.getString(KEY_CUSTOM_COVERS, null) ?: "{}")
         }.getOrDefault(org.json.JSONObject())
 
     // ---------- 播放直链持久化（v1.4.29：API 故障时离线兜底） ----------

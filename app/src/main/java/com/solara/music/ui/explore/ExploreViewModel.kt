@@ -3,13 +3,16 @@ package com.solara.music.ui.explore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.solara.music.data.ExploreGenres
+import com.solara.music.data.LocalCoverExtractor
 import com.solara.music.data.MusicApi
 import com.solara.music.data.Song
 import com.solara.music.data.Store
 import com.solara.music.data.moved
 import com.solara.music.player.PlayerManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 探索雷达：从偏好风格中随机抽取一种 + 随机音源搜索 30 首，
@@ -31,6 +34,8 @@ class ExploreViewModel : ViewModel() {
     val error = MutableStateFlow<String?>(null)
     /** 一次性提示（Snackbar 用）。 */
     val toast = MutableStateFlow<String?>(null)
+    /** v1.4.45：探索页背景封面 URL——每次探索成功后从结果随机挑一首的封面。 */
+    val bgCover = MutableStateFlow<String?>(null)
 
     init {
         // 恢复上次退出前的探索结果（风格 + 列表）
@@ -38,12 +43,60 @@ class ExploreViewModel : ViewModel() {
         if (saved != null && saved.second.isNotEmpty()) {
             genre.value = saved.first
             results.value = saved.second
+            // v1.4.45：恢复会话也从上次结果里随机挑一张背景封面
+            pickBgCoverAsync(saved.second)
+        }
+        // v1.4.57：背景封面跟随当前播放歌曲自动切换——播到哪首换哪首。
+        // 收集 currentSong 流，切歌时解析新歌封面更新 bgCover。
+        // - 在线歌：fetchPicUrl（带内存缓存，重复切回不重复请求）
+        // - 本地歌：只查 Store.localCoverUrl（在线匹配过的 URL 缓存）；
+        //   不调聚合 API（无 local 源，注定失败——v1.4.28 教训），
+        //   无缓存则静默保持当前背景
+        // 点击歌曲的 setBgFromSong 行为保留（点击的歌通常随即开播，
+        // 两者自然衔接）。
+        viewModelScope.launch {
+            PlayerManager.currentSong.collect { song ->
+                if (song != null) {
+                    val url = if (LocalCoverExtractor.isLocalSong(song)) {
+                        withContext(Dispatchers.IO) { Store.localCoverUrl(song) }
+                    } else {
+                        runCatching { MusicApi.fetchPicUrl(song) }.getOrNull()
+                    }
+                    if (url != null) bgCover.value = url
+                }
+            }
         }
     }
 
     /** 持久化探索状态（结果变化时调用）。 */
     private fun persist() {
         Store.saveExploreState(genre.value, results.value)
+    }
+
+    /**
+     * v1.4.45：从结果列表随机挑一首解析封面 URL 作页面背景。
+     * 解析失败静默忽略（背景保持上一张/渐变兜底，不阻塞探索流程）。
+     */
+    private fun pickBgCoverAsync(songs: List<Song>) {
+        if (songs.isEmpty()) return
+        val pick = songs.random()
+        viewModelScope.launch {
+            runCatching { MusicApi.fetchPicUrl(pick) }
+                .getOrNull()
+                ?.let { bgCover.value = it }
+        }
+    }
+
+    /**
+     * v1.4.50：点击结果列表某首歌时，卡片背景换成这首歌的封面。
+     * 解析失败静默忽略（保持当前背景）。
+     */
+    fun setBgFromSong(song: Song) {
+        viewModelScope.launch {
+            runCatching { MusicApi.fetchPicUrl(song) }
+                .getOrNull()
+                ?.let { bgCover.value = it }
+        }
     }
 
     fun consumeToast() {
@@ -98,6 +151,8 @@ class ExploreViewModel : ViewModel() {
                         results.value = emptyList()
                         persist()
                     } else {
+                        // v1.4.45：每次探索成功都随机换一张背景封面
+                        pickBgCoverAsync(songs)
                         appendToQueue(songs, pickedGenre)
                     }
                 }
