@@ -50,10 +50,23 @@ android {
         }
     }
 
+    // v1.5.0：release 签名配置——沿用 debug keystore（与历史发版一致，
+    // 保证老用户可直接升级）。keystore 备份在 G:\WorkBuddy\tools\dmusic-release.keystore
+    // （C 盘 Deep Freeze 风险，正式 keystore 以 G 盘备份为准）。
+    // store 密码 android / key 密码 android / alias androiddebugkey
+    signingConfigs {
+        create("release") {
+            storeFile = file("G:/WorkBuddy/tools/dmusic-release.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
