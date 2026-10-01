@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -67,6 +68,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -94,6 +96,7 @@ import com.solara.music.lyrics.LrcParser
 import com.solara.music.player.PlayMode
 import com.solara.music.player.PlayerManager
 import com.solara.music.ui.components.CoverImage
+import com.solara.music.ui.components.ShareHelper
 import com.solara.music.ui.components.formatMs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -146,7 +149,9 @@ fun PlayerScreen(
 
     // ---- v1.4.25：校准模式（原常驻校准行收进更多菜单）+ 歌词编辑 ----
     /** 校准模式：更多菜单「歌词校准」进入，显示校准行/打点工具栏，退出恢复简洁。 */
-    var calibMode by remember { mutableStateOf(false) }
+    // v1.4.58 第十二轮：remember(song)——切歌随重组同步重置（校准数据
+    // 按歌独立；不再依赖 LaunchedEffect 协程清理，见下方打点状态注释）
+    var calibMode by remember(song) { mutableStateOf(false) }
     /** 歌词编辑对话框：编辑当前歌词文本（LRC 原文或纯文本），保存后生效。 */
     var showLyricEditor by remember { mutableStateOf(false) }
     // v1.4.39：下载歌词对话框（本地歌无歌词时从歌词页空态/更多菜单进入）
@@ -154,28 +159,45 @@ fun PlayerScreen(
     // v1.4.41：封面编辑对话框（在线搜索匹配 / 相册选图）
     var showCoverEditor by remember { mutableStateOf(false) }
 
+    // ---- v1.4.59 r18：分享需要下载确认框 ----
+    // 无本地文件点「分享」→ 弹确认框；确认 = 跳到下载流程（品质选择
+    // 下载），分享完全手动——下载完成后用户自己再点分享
+    var shareDownloadTarget by remember { mutableStateOf<Song?>(null) }
+
     // ---- v1.4.16：逐句打点模式 ----
     // 打点模式：唱到当前句时点「打点」记录此刻播放位置为该句开唱时刻，
     // 自动跳到下一句；支持撤销上一条/跳过；退出即保存。
-    var tappingMode by remember { mutableStateOf(false) }
-    var tappingLine by remember { mutableStateOf(0) }
+    // v1.4.58 第十二轮：remember(song)——切歌随重组同步重置，根治
+    // r11 引入的跨歌残留：原 LaunchedEffect(song) 协程清理依赖调度时序，
+    // 打点进行中切歌（holdAutoAdvance 停播后手动切下一首）时 tappingMode/
+    // tappingMap 可能残留——tappingMode 残留 → currentLine 恒为 tappingLine
+    // （新歌歌词不滚动）；tappingMap 残留 → 菜单误现「保存校准歌词」，
+    // 点保存还会把上一首的打点时刻写进新歌 LRC（数据污染）。
+    // remember 键变更 = 重组时同步重建状态，无时序依赖。
+    var tappingMode by remember(song) { mutableStateOf(false) }
+    var tappingLine by remember(song) { mutableStateOf(0) }
     /** 已打点结果：行索引 → 毫秒（退出打点模式时整体落盘）。 */
-    var tappingMap by remember { mutableStateOf<Map<Int, Long>>(emptyMap()) }
+    var tappingMap by remember(song) { mutableStateOf<Map<Int, Long>>(emptyMap()) }
     /** 该歌已保存的打点时间戳（显示歌词时优先使用）。 */
     var timestampsTick by remember { mutableStateOf(0) }
     val savedTimestamps = remember(song, timestampsTick) {
         song?.let { Store.lyricTimestampsOf(it) } ?: emptyMap()
     }
 
-    // 切歌自动退出打点/校准模式（未保存的打点丢弃——不同歌的行索引不通用）
+    // v1.4.58 第十二轮：切歌同步解除自动切歌抑制。打点/校准状态本身已由
+    // remember(song) 随重组同步重置（见上），此 effect 只兜底全局标志——
+    // holdAutoAdvance 是 PlayerManager 单例字段，不随组合状态重置。
+    // （resolveAndPlay 侧按 holdKey 判曲目变化也会清，此处双保险）
     LaunchedEffect(song) {
-        if (tappingMode) {
-            tappingMode = false
-            tappingMap = emptyMap()
-            tappingLine = 0
-        }
-        // v1.4.25：校准模式也随歌退出（校准数据按歌独立，避免误操作）
-        if (calibMode) calibMode = false
+        PlayerManager.releaseAutoAdvance()
+    }
+
+    // v1.4.58 第十一轮：播放页离开组合（收起/退出 App）时兜底解除
+    // 自动切歌抑制——tappingMode 是本组合内的 remember 状态，收起即丢，
+    // 若 holdAutoAdvance 残留 true，后续歌曲播完永远停在原地不切歌。
+    // 打点数据本身随收起丢弃（与旧行为一致：未保存即弃）。
+    DisposableEffect(Unit) {
+        onDispose { PlayerManager.releaseAutoAdvance() }
     }
 
     // 循环滑动（v1.4.3 修复：v1.4.2 的"3页+边界弹回"方案有缺陷——停稳在歌词页
@@ -375,6 +397,18 @@ fun PlayerScreen(
 
     val current = song
 
+    // v1.4.58 第十一轮：播放页拦截系统返回键 = 收起播放页。
+    // 根因：OnBackPressedDispatcher 按"后注册先分发"（LIFO）工作——
+    // 播放页覆盖在主界面/歌单详情之上，但此前自己没有 BackHandler，
+    // 返回键先被底层的歌单详情 BackHandler（PlaylistsScreen）吃掉
+    // 隐形关闭详情（被播放页盖住看不见），第二次才关播放页——
+    // 用户看到"按两次、落在歌单列表"而不是歌曲列表。
+    // 播放页组合晚于底层页面 → 此 BackHandler 注册最晚 → 最先分发，
+    // 一次返回即收起播放页，落回打开前的页面（歌单详情/歌曲列表）。
+    androidx.activity.compose.BackHandler(enabled = true) {
+        onDismiss()
+    }
+
     /**
      * v1.4.15：调节当前歌曲的歌词偏移（±0.5s 步进，范围 ±90s），reset=true 直接归零。
      * 每首歌独立保存——不同歌的 LRC 时间轴偏差不同，全局偏移会互相污染。
@@ -440,6 +474,8 @@ fun PlayerScreen(
             tappingMode = false
             tappingMap = emptyMap()
             tappingLine = 0
+            // v1.4.58 第十一轮：固化后解除自动切歌抑制
+            PlayerManager.releaseAutoAdvance()
             vm.refreshLyrics()
             Toast.makeText(
                 ctx,
@@ -552,6 +588,26 @@ fun PlayerScreen(
                                     onDownload()
                                 }
                             )
+                            // v1.4.59 r18：分享（下载后、封面编辑前）——分享必须
+                            // 有本地文件：有文件（已下载/本地导入）直接分享文件本体；
+                            // 没有则弹「分享需要下载」确认框——确认跳到下载流程
+                            // （品质选择下载），下载完成后用户手动再点分享
+                            DropdownMenuItem(
+                                text = { Text("分享") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Share, null)
+                                },
+                                onClick = {
+                                    menuOpen = false
+                                    current?.let { song ->
+                                        scope.launch {
+                                            if (!ShareHelper.shareFile(context, song)) {
+                                                shareDownloadTarget = song
+                                            }
+                                        }
+                                    }
+                                }
+                            )
                             // v1.4.41：封面编辑（在线搜索匹配 / 相册选图自定义）
                             // v1.4.42：移到「下载」后、「歌词校准」前
                             DropdownMenuItem(
@@ -578,6 +634,7 @@ fun PlayerScreen(
                                         tappingMode = false
                                         tappingMap = emptyMap()
                                         tappingLine = 0
+                                        PlayerManager.releaseAutoAdvance()
                                     }
                                     calibMode = !calibMode
                                     // v1.4.26：进入校准时自动翻到歌词页（封面页点进来的场景）
@@ -772,12 +829,16 @@ fun PlayerScreen(
                                         tappingMode = false
                                         tappingMap = emptyMap()
                                         tappingLine = 0
+                                        // v1.4.58 第十一轮：落盘后解除自动切歌抑制
+                                        PlayerManager.releaseAutoAdvance()
                                     }) { Text("完成", style = MaterialTheme.typography.labelMedium) }
                                     // v1.4.25：退出打点（未保存打点丢弃）
                                     CompactTextButton(onClick = {
                                         tappingMode = false
                                         tappingMap = emptyMap()
                                         tappingLine = 0
+                                        // v1.4.58 第十一轮：退出打点即解除自动切歌抑制
+                                        PlayerManager.releaseAutoAdvance()
                                     }) { Text("退出", style = MaterialTheme.typography.labelMedium) }
                                 }
                             }
@@ -830,6 +891,9 @@ fun PlayerScreen(
                                             tappingMap = emptyMap()
                                             tappingLine = 0
                                             tappingMode = true
+                                            // v1.4.58 第十一轮：打点进行中抑制自动切歌——
+                                            // 歌曲播完停在原地等保存，保住未落盘的打点数据
+                                            song?.let { PlayerManager.holdAutoAdvanceFor(it) }
                                         }
                                     }) {
                                         Icon(
@@ -1145,6 +1209,33 @@ fun PlayerScreen(
         com.solara.music.ui.components.CoverEditorDialog(
             song = current,
             onDismiss = { showCoverEditor = false }
+        )
+    }
+
+    // ---- v1.4.59 r18：分享需要下载确认框（分享手动） ----
+    // 无本地文件点「分享」→ 提醒分享需要下载；确认 = 跳到下载流程
+    // （品质选择下载），取消 = 退出分享。下载完成后用户自己再点
+    // 「分享」分享文件——全程手动，不做自动等待/自动分享
+    shareDownloadTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { shareDownloadTarget = null },
+            title = { Text("分享需要下载歌曲") },
+            text = {
+                Text(
+                    "「${target.displayName} - ${target.artistName}」还没有下载到本地。\n" +
+                        "分享歌曲文件需要先下载。去下载吗？"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    shareDownloadTarget = null
+                    // 跳到下载流程（品质选择弹窗），与「下载」菜单一致
+                    onDownload()
+                }) { Text("去下载") }
+            },
+            dismissButton = {
+                TextButton(onClick = { shareDownloadTarget = null }) { Text("取消") }
+            }
         )
     }
 }

@@ -31,13 +31,22 @@ object LocalCoverExtractor {
     /** 每次封面数据可能变化时自增，UI 侧观察它触发重新加载。 */
     val revision = MutableStateFlow(0L)
 
-    /** 是否为本地导入（扫描）的歌曲。 */
-    fun isLocalSong(song: Song): Boolean =
-        song.source == "local" && song.id.startsWith("local:")
+    /**
+     * 是否为本地文件定位记录（v1.4.58 第六轮：含在线下载歌改名后的
+     * 混合记录——source 仍是在线源但 id 已指向本地文件）。
+     */
+    fun isLocalSong(song: Song): Boolean = song.id.startsWith("local:")
 
-    /** 本地歌曲对应的原始文件名（含扩展名）。 */
+    /** 本地歌曲对应的原始文件名（含扩展名，不含路径）。 */
     fun localFileName(song: Song): String =
-        if (isLocalSong(song)) song.id.removePrefix("local:") else ""
+        if (isLocalSong(song)) song.id.removePrefix("local:").substringAfterLast('/') else ""
+
+    /** v1.4.58：id 里的完整相对路径（含路径前缀时）；纯文件名 id 返回 null。 */
+    private fun localRelPath(song: Song): String? {
+        if (!isLocalSong(song)) return null
+        val ref = song.id.removePrefix("local:")
+        return if (ref.contains('/')) ref else null
+    }
 
     /** 封面数据变化后调用：清全部缓存并广播 UI 刷新。 */
     fun bumpRevision() {
@@ -202,6 +211,22 @@ object LocalCoverExtractor {
     ): android.content.res.AssetFileDescriptor? {
         val fileName = localFileName(song)
         if (fileName.isEmpty()) return null
+        // v1.4.58：id 含相对路径（文件夹浏览生成）——有所有文件访问
+        // 权限时文件系统直开（.dts 等媒体库不收录格式唯一可行路径）
+        val relPath = localRelPath(song)
+        if (relPath != null && DownloadManager.hasAllFilesAccess()) {
+            val external = android.os.Environment.getExternalStorageDirectory()
+            if (external != null) {
+                val f = File(external, relPath)
+                if (f.exists() && f.canRead()) {
+                    return runCatching {
+                        context.contentResolver.openAssetFileDescriptor(
+                            android.net.Uri.fromFile(f), "r"
+                        )
+                    }.getOrNull()
+                }
+            }
+        }
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             // v1.4.2：导入歌曲不限 D_Music，全库按文件名精确查
             val selection = "${MediaStore.Audio.Media.DISPLAY_NAME}=?"

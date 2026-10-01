@@ -1,8 +1,6 @@
 package com.solara.music.ui.local
 
-import android.content.Intent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,21 +10,25 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Checklist
-import androidx.compose.material.icons.filled.ClearAll
-import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.ImageSearch
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,7 +39,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,11 +48,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import com.solara.music.data.DownloadManager
 import com.solara.music.data.LocalCoverExtractor
 import com.solara.music.data.LyricRepository
@@ -60,38 +61,26 @@ import com.solara.music.data.TagEmbedder
 import com.solara.music.player.PlayerManager
 import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.EmptyState
-import com.solara.music.ui.components.FolderPickerDialog
+import com.solara.music.ui.components.LocalFileOpsHandler
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
-import com.solara.music.ui.components.dragReorder
-import com.solara.music.ui.components.rememberDragReorderState
 import com.solara.music.ui.components.rememberMultiSelectState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 待授权操作：移除或重命名（v1.4.4）。 */
-private data class PendingAuth(
-    val song: Song,
-    val isDelete: Boolean,
-    val renameInput: String? = null
-)
-
-/** v1.4.5：待「所有文件访问」授权的操作（跳系统设置返回后自动续办）。 */
-private data class PendingAllFiles(
-    val song: Song,
-    val isDelete: Boolean,
-    val renameInput: String? = null
-)
-
 /**
- * 本地歌曲：已下载到本机的歌曲列表。
- * - 点击播放（本地文件优先，离线可用）
- * - 更多菜单：加入歌单 / 收藏 / 移除（移出列表并删除文件）/ 重命名
- * - 顶栏菜单：扫描本地歌曲 / 选择扫描文件夹（系统文件管理器）/ 清空列表 /
- *   匹配在线封面
- * - v1.4.4：删除/重命名他建文件走 Scoped Storage 系统授权弹窗
- * - 长按拖动排序
+ * 本地歌曲（v1.4.58 重构）：文件夹浏览形式。
+ *
+ * - 打开即浏览内部存储根目录，逐级进入文件夹
+ * - 混合列表：文件夹行（图标+名称+音频计数）在前，歌曲行（SongRow）在后
+ * - 歌曲直接点击播放（MediaStore 全库按文件名精确解析，任意目录可播）
+ * - 目录内更多菜单：多选（整个目录加入歌单）/ 播放全部 / 匹配在线封面 /
+ *   批量下载歌词
+ * - 单曲菜单：加入歌单 / 收藏 / 下载歌词 / 重命名 / 移除（删除文件）
+ * - 删除/重命名他建文件走 Scoped Storage 系统授权弹窗（v1.4.4/5 链路保留）
+ * - v1.4.58 起移除「扫描本地歌曲 / 扫描文件夹 / 清空列表 / 拖动排序」
+ *   （浏览即所见，无需扫描导入；Store.downloads 仍保留在线下载记录）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,223 +90,92 @@ fun LocalSongsScreen(
     onShowMessage: (String) -> Unit = {},
     onLyricUpdated: () -> Unit = {}
 ) {
-    val songs by Store.downloads.collectAsState()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val favorites by Store.favorites.collectAsState()
+    // v1.4.59：当前播放歌曲——列表行显示播放中标记
+    val currentSong by PlayerManager.currentSong.collectAsState()
+
+    // ---------- 文件夹浏览状态 ----------
+    // null = 内部存储根；"Music/D_Music" = 子目录。
+    // v1.4.58：初始值取 Store 持久化（跨页面/重启保留最后浏览位置），
+    // 每次导航同步落盘
+    var currentPath by remember { mutableStateOf(Store.localBrowsePath.value) }
+    var content by remember { mutableStateOf<DownloadManager.FolderContent?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var canRead by remember { mutableStateOf(true) }
+    // v1.4.58：目录列表刷新 tick（删除/重命名文件后 bump）
+    var refreshTick by remember { mutableStateOf(0) }
+
+    // 浏览位置持久化：路径变化即保存（含回到根 = null）
+    LaunchedEffect(currentPath) {
+        Store.saveLocalBrowsePath(currentPath)
+    }
+
+    // ---------- 操作状态（沿用旧版链路） ----------
     var pendingDelete by remember { mutableStateOf<Song?>(null) }
     var pendingRename by remember { mutableStateOf<Song?>(null) }
-    var pendingClear by remember { mutableStateOf(false) }
-    var pendingAuth by remember { mutableStateOf<PendingAuth?>(null) }
-    // v1.4.5：他建文件操作 → 自家选择框（永久授权 / 仅此一次）
-    var askAllFiles by remember { mutableStateOf<PendingAllFiles?>(null) }
-    var pendingAllFiles by remember { mutableStateOf<PendingAllFiles?>(null) }
-    // v1.4.7：App 内文件夹浏览器
-    var showFolderPicker by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
-    var scanning by remember { mutableStateOf(false) }
     var scanToast by remember { mutableStateOf<String?>(null) }
     // v1.4.0：批量匹配在线封面
     var matching by remember { mutableStateOf(false) }
-    var matchProgress by remember { mutableStateOf(0 to 0) } // done to total
+    var matchProgress by remember { mutableStateOf(0 to 0) }
     // v1.4.39：下载歌词（单曲对话框 + 批量）
     var lyricTarget by remember { mutableStateOf<Song?>(null) }
     var lyricBatching by remember { mutableStateOf(false) }
-    var lyricBatchProgress by remember { mutableStateOf(0 to 0) } // done to total
-    // v1.4.26：多选批量（收藏 / 加入歌单 / 移出列表）
+    var lyricBatchProgress by remember { mutableStateOf(0 to 0) }
+    // v1.4.26：多选批量
     val select = rememberMultiSelectState()
     var showBatchPlaylist by remember { mutableStateOf(false) }
-    var showBatchRemoveConfirm by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+    // v1.4.58：重命名当前文件夹
+    var pendingFolderRename by remember { mutableStateOf(false) }
 
-    val dragState = rememberDragReorderState(listState) { from, to ->
-        Store.moveDownload(from, to)
+    val songs = content?.songs ?: emptyList()
+
+    /** 返回上级路径（根的父级 = null = 根）。 */
+    fun parentOf(path: String?): String? =
+        path?.substringBeforeLast('/', "")?.ifBlank { null }
+
+    // v1.4.58：系统返回键统一拦截（优先级从高到低）：
+    // 1. 多选模式 → 退出多选（优先于 SolaraApp 的子页面返回拦截——
+    //    Compose BackHandler 组合树中后注册者优先）
+    // 2. 目录内 → 返回上级
+    // 3. 根目录 → 不拦截，交给外层退出本页
+    androidx.activity.compose.BackHandler(
+        enabled = select.active || currentPath != null
+    ) {
+        when {
+            select.active -> select.exit()
+            else -> currentPath = parentOf(currentPath)
+        }
     }
 
-    // v1.4.26：多选模式下按系统返回键 = 退出多选（优先于 SolaraApp 的
-    // 子页面返回拦截——Compose BackHandler 组合树中后注册者优先）
-    androidx.activity.compose.BackHandler(enabled = select.active) {
-        select.exit()
+    // 列目录（路径或刷新 tick 变化时重列）
+    LaunchedEffect(currentPath, refreshTick) {
+        loading = true
+        val result = withContext(Dispatchers.IO) {
+            runCatching { DownloadManager.listFolder(currentPath) }.getOrNull()
+        }
+        canRead = result != null
+        content = result
+        loading = false
+    }
+
+    /** v1.4.58：文件删除/重命名成功后刷新当前目录。 */
+    fun refreshFolder() {
+        refreshTick++
     }
 
     /**
-     * 扫描本地歌曲。
-     * v1.4.8：folder 参数语义收紧——
-     * - null = 默认目录 Music/D_Music（「扫描本地歌曲」固定用默认目录，
-     *   不再被「选择扫描文件夹」的选择劫持）
-     * - 指定路径 = 「选择扫描文件夹」确认的目录
-     */
-    fun runScan(folder: String? = null) {
-        if (scanning) return
-        scanning = true
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    DownloadManager.scanLocalLibrary(context.applicationContext, folder)
-                }.getOrDefault(Store.downloads.value)
-            }
-            val added = result.size - songs.size
-            Store.replaceDownloads(result)
-            scanning = false
-            val folderName = folder ?: "Music/D_Music"
-            scanToast = when {
-                result.isEmpty() -> "在 $folderName 未找到音频文件"
-                added > 0 -> "扫描完成：新增 $added 首，共 ${result.size} 首"
-                else -> "扫描完成：共 ${result.size} 首（无新增）"
-            }
-        }
-    }
-
-    // v1.4.5：执行「所有文件访问」授权后的待办操作（删除/重命名）。
-    // 从系统设置返回（onResume）且权限已开 → 自动重试一次
-    fun runPendingAllFiles() {
-        val pending = pendingAllFiles ?: return
-        pendingAllFiles = null
-        if (!DownloadManager.hasAllFilesAccess()) {
-            scanToast = "未开启「所有文件访问」，操作已取消"
-            return
-        }
-        scope.launch {
-            val target = pending.song
-            if (pending.isDelete) {
-                // 目标在播：彻底停止并释放文件句柄
-                val cur = PlayerManager.currentSong.value
-                if (cur != null && cur.sameAs(target)) {
-                    PlayerManager.stop()
-                    PlayerManager.playerOrNull?.let { p ->
-                        runCatching { p.stop(); p.clearMediaItems() }
-                    }
-                }
-                val result = withContext(Dispatchers.IO) {
-                    runCatching {
-                        DownloadManager.deleteLocalFileWithAuth(
-                            context.applicationContext, target
-                        )
-                    }.getOrDefault(DownloadManager.LocalFileResult.FAILED)
-                }
-                when (result) {
-                    DownloadManager.LocalFileResult.DELETED,
-                    DownloadManager.LocalFileResult.NOT_FOUND -> {
-                        Store.removeDownload(target)
-                        PlayerManager.queue.value.forEachIndexed { i, s ->
-                            if (s.sameAs(target)) {
-                                PlayerManager.removeAt(i); return@forEachIndexed
-                            }
-                        }
-                        if (result == DownloadManager.LocalFileResult.DELETED) {
-                            scanToast = "已删除文件并移出列表"
-                        }
-                    }
-
-                    else -> scanToast = "文件删除失败"
-                }
-            } else {
-                val input = pending.renameInput ?: return@launch
-                val cur = PlayerManager.currentSong.value
-                if (cur != null && cur.sameAs(target)) {
-                    PlayerManager.stop()
-                    PlayerManager.playerOrNull?.let { p ->
-                        runCatching { p.stop(); p.clearMediaItems() }
-                    }
-                }
-                val (result, newFile) = withContext(Dispatchers.IO) {
-                    runCatching {
-                        DownloadManager.renameLocalFileWithAuth(
-                            context.applicationContext, target, input
-                        )
-                    }.getOrDefault(DownloadManager.RenameResult.FAILED to null)
-                }
-                if (result == DownloadManager.RenameResult.OK && newFile != null) {
-                    Store.renameDownload(target, newFile)
-                    LocalCoverExtractor.invalidate(target)
-                    LocalCoverExtractor.bumpRevision()
-                    PlayerManager.replaceSong(
-                        target,
-                        Store.downloads.value.firstOrNull {
-                            it.id == "local:$newFile"
-                        } ?: target.copy(id = "local:$newFile")
-                    )
-                    scanToast = "重命名成功"
-                } else {
-                    scanToast = "重命名失败"
-                }
-            }
-        }
-    }
-
-    // 从系统设置开启权限返回本页时，自动续办刚才的操作
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                if (pendingAllFiles != null) runPendingAllFiles()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    // v1.4.7：选择扫描文件夹已改为 App 内文件夹浏览器（FolderPickerDialog）。
-    // 旧 SAF 方案（OpenDocumentTree）在部分 ROM 上会记住上次授权的 tree URI，
-    // 第二次打开直接自动返回旧目录无法重选；且点选即扫描、无法进子目录确认。
-
-    // v1.4.4：Scoped Storage 授权弹窗结果（删除/写入他建文件）
-    val authLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        val pending = pendingAuth
-        pendingAuth = null
-        if (result.resultCode == android.app.Activity.RESULT_OK && pending != null) {
-            scope.launch {
-                withContext(Dispatchers.IO) {
-                    if (pending.isDelete) {
-                        // 系统已删文件（或授权成功），清理记录
-                        Store.removeDownload(pending.song)
-                        PlayerManager.queue.value.forEachIndexed { i, s ->
-                            if (s.sameAs(pending.song)) {
-                                PlayerManager.removeAt(i); return@forEachIndexed
-                            }
-                        }
-                    } else {
-                        // 写权限已授予：重试重命名
-                        val input = pending.renameInput ?: return@withContext
-                        val newFile = runCatching {
-                            DownloadManager.renameLocalFile(
-                                context.applicationContext, pending.song, input
-                            )
-                        }.getOrNull()
-                        if (newFile != null) {
-                            Store.renameDownload(pending.song, newFile)
-                            LocalCoverExtractor.invalidate(pending.song)
-                            LocalCoverExtractor.bumpRevision()
-                            PlayerManager.replaceSong(
-                                pending.song,
-                                Store.downloads.value.firstOrNull {
-                                    it.id == "local:$newFile"
-                                } ?: pending.song.copy(id = "local:$newFile")
-                            )
-                        } else {
-                            scanToast = "重命名失败"
-                        }
-                    }
-                }
-            }
-        } else if (pending != null && !pending.isDelete) {
-            scanToast = "未获得文件修改权限，重命名已取消"
-        }
-    }
-
-    /**
-     * v1.4.0：批量匹配在线封面。
+     * v1.4.0：批量匹配在线封面（对当前目录歌曲）。
      * 暂停播放（释放文件占用）→ 逐首：跳过已有内嵌封面/URL 缓存的 →
      * 在线搜索匹配 → 下载封面字节 → 嵌入文件（失败则仅存 URL 缓存）。
-     * 完成后 bumpRevision 触发全列表封面刷新。
      */
     fun runMatchCovers() {
         if (matching) return
         val targets = songs.filter { LocalCoverExtractor.isLocalSong(it) }
         if (targets.isEmpty()) {
-            scanToast = "没有需要匹配封面的本地歌曲"
+            scanToast = "当前目录没有歌曲"
             return
         }
         matching = true
@@ -356,16 +214,13 @@ fun LocalSongsScreen(
     }
 
     /**
-     * v1.4.39：批量下载歌词。
-     * 逐首：跳过已有歌词（缓存/内嵌/伴生 .lrc）→ 自动精确匹配（歌名+歌手）→
-     * 取词 → 缓存 + 嵌入文件（MP3 USLT / FLAC 伴生 .lrc）。
-     * 完成后回调刷新播放页歌词显示。
+     * v1.4.39：批量下载歌词（对当前目录歌曲）。
      */
     fun runBatchLyrics(onAllDone: () -> Unit) {
         if (lyricBatching) return
         val targets = songs.filter { LocalCoverExtractor.isLocalSong(it) }
         if (targets.isEmpty()) {
-            scanToast = "没有本地歌曲"
+            scanToast = "当前目录没有歌曲"
             return
         }
         lyricBatching = true
@@ -382,7 +237,6 @@ fun LocalSongsScreen(
                         if (LyricRepository.hasLyric(context.applicationContext, song)) {
                             return@runCatching -1
                         }
-                        // 自动精确匹配（歌名+歌手）→ 取词 → 缓存+嵌入
                         val hit = LyricRepository.matchLyricOnline(song)
                             ?: return@runCatching 0
                         val pair = LyricRepository.downloadLyric(
@@ -417,7 +271,7 @@ fun LocalSongsScreen(
     ) {
         Spacer(Modifier.height(12.dp))
         if (select.active) {
-            // v1.4.26：多选模式顶栏（收藏 / 加入歌单 / 移出列表）
+            // v1.4.26：多选模式顶栏（收藏 / 加入歌单）
             SelectionTopBar(
                 selectedCount = select.selected.size,
                 totalCount = songs.size,
@@ -432,9 +286,6 @@ fun LocalSongsScreen(
                 },
                 onAddToPlaylist = {
                     if (select.selected.isNotEmpty()) showBatchPlaylist = true
-                },
-                onDelete = {
-                    if (select.selected.isNotEmpty()) showBatchRemoveConfirm = true
                 }
             )
         } else {
@@ -442,139 +293,175 @@ fun LocalSongsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onBack) {
+                IconButton(onClick = {
+                    if (currentPath == null) onBack()
+                    else currentPath = parentOf(currentPath)
+                }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                 }
                 Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = currentPath?.substringAfterLast('/') ?: "本地歌曲",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        // v1.4.58：标题后跟（n 首）小字（对齐歌单详情页样式）
+                        if (!loading && canRead && songs.isNotEmpty()) {
+                            Text(
+                                text = "（${songs.size} 首）",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
+                    }
                     Text(
-                        text = "本地歌曲",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Text(
-                        text = "${songs.size} 首 · 长按可拖动排序",
+                        text = "内部存储" + (currentPath?.let { "/$it" } ?: ""),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 Box(modifier = Modifier.padding(end = 12.dp)) {
-                IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "更多")
-                }
-                DropdownMenu(
-                    expanded = menuOpen,
-                    onDismissRequest = { menuOpen = false }
-                ) {
-                    // v1.4.26：多选收进更多菜单
-                    DropdownMenuItem(
-                        text = { Text("多选") },
-                        leadingIcon = { Icon(Icons.Filled.Checklist, contentDescription = null) },
-                        enabled = songs.isNotEmpty(),
-                        onClick = {
-                            menuOpen = false
-                            select.enter()
-                        }
-                    )
-                    // v1.4.26：播放全部收进更多菜单
-                    DropdownMenuItem(
-                        text = { Text("播放全部") },
-                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null) },
-                        enabled = songs.isNotEmpty(),
-                        onClick = {
-                            menuOpen = false
-                            PlayerManager.setQueue(songs, 0)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(if (scanning) "扫描中…" else "扫描本地歌曲") },
-                        leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
-                        enabled = !scanning,
-                        onClick = {
-                            menuOpen = false
-                            runScan()
-                        }
-                    )
-                    // v1.4.7：选择扫描文件夹——App 内文件夹浏览器
-                    // （SAF 在部分 ROM 上会记住旧授权目录导致无法重选）
-                    DropdownMenuItem(
-                        text = { Text("扫描文件夹") },
-                        leadingIcon = { Icon(Icons.Filled.FolderOpen, contentDescription = null) },
-                        enabled = !scanning,
-                        onClick = {
-                            menuOpen = false
-                            showFolderPicker = true
-                        }
-                    )
-                    // v1.4.3：清空列表（不删除文件）
-                    DropdownMenuItem(
-                        text = { Text("清空列表") },
-                        leadingIcon = { Icon(Icons.Filled.ClearAll, contentDescription = null) },
-                        enabled = songs.isNotEmpty(),
-                        onClick = {
-                            menuOpen = false
-                            pendingClear = true
-                        }
-                    )
-                    // v1.4.0：批量匹配在线封面（搜索匹配 → 嵌入文件 + 缓存 URL）
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                if (matching) "匹配封面中 ${matchProgress.first}/${matchProgress.second}…"
-                                else "匹配在线封面"
-                            )
-                        },
-                        leadingIcon = { Icon(Icons.Filled.ImageSearch, contentDescription = null) },
-                        enabled = !matching && songs.isNotEmpty(),
-                        onClick = {
-                            menuOpen = false
-                            runMatchCovers()
-                        }
-                    )
-                    // v1.4.39：批量下载歌词（自动匹配歌名+歌手 → 缓存+嵌入文件）
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                if (lyricBatching) "下载歌词中 ${lyricBatchProgress.first}/${lyricBatchProgress.second}…"
-                                else "批量下载歌词"
-                            )
-                        },
-                        leadingIcon = { Icon(Icons.Filled.Lyrics, contentDescription = null) },
-                        enabled = !lyricBatching && songs.isNotEmpty(),
-                        onClick = {
-                            menuOpen = false
-                            runBatchLyrics(onLyricUpdated)
-                        }
-                    )
-                }
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "更多")
+                    }
+                    DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false }
+                    ) {
+                        // v1.4.26：多选收进更多菜单
+                        DropdownMenuItem(
+                            text = { Text("多选") },
+                            leadingIcon = { Icon(Icons.Filled.Checklist, contentDescription = null) },
+                            enabled = songs.isNotEmpty(),
+                            onClick = {
+                                menuOpen = false
+                                select.enter()
+                            }
+                        )
+                        // v1.4.26：播放全部收进更多菜单
+                        DropdownMenuItem(
+                            text = { Text("播放全部") },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null) },
+                            enabled = songs.isNotEmpty(),
+                            onClick = {
+                                menuOpen = false
+                                PlayerManager.setQueue(songs, 0)
+                            }
+                        )
+                        // v1.4.58：重命名当前文件夹（对齐歌单详情页菜单结构）
+                        DropdownMenuItem(
+                            text = { Text("重命名文件夹") },
+                            leadingIcon = { Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = null) },
+                            enabled = currentPath != null,
+                            onClick = {
+                                menuOpen = false
+                                pendingFolderRename = true
+                            }
+                        )
+                        // v1.4.0：批量匹配在线封面（搜索匹配 → 嵌入文件 + 缓存 URL）
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (matching) "匹配封面中 ${matchProgress.first}/${matchProgress.second}…"
+                                    else "匹配在线封面"
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Filled.ImageSearch, contentDescription = null) },
+                            enabled = !matching && songs.isNotEmpty(),
+                            onClick = {
+                                menuOpen = false
+                                runMatchCovers()
+                            }
+                        )
+                        // v1.4.39：批量下载歌词（自动匹配歌名+歌手 → 缓存+嵌入文件）
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (lyricBatching) "下载歌词中 ${lyricBatchProgress.first}/${lyricBatchProgress.second}…"
+                                    else "批量下载歌词"
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Filled.Lyrics, contentDescription = null) },
+                            enabled = !lyricBatching && songs.isNotEmpty(),
+                            onClick = {
+                                menuOpen = false
+                                runBatchLyrics(onLyricUpdated)
+                            }
+                        )
+                    }
                 }
             }
         }
 
-        if (songs.isEmpty()) {
-            Box(Modifier.weight(1f).fillMaxWidth()) {
+        when {
+            loading -> Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp))
+            }
+
+            !canRead -> Box(Modifier.weight(1f).fillMaxWidth()) {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    EmptyState("还没有本地歌曲\n在歌曲菜单里选「下载」保存到本机")
+                    EmptyState("无法读取文件夹\n请开启「所有文件访问」权限后重试")
                     Spacer(Modifier.height(12.dp))
-                    TextButton(
-                        onClick = { runScan() },
-                        enabled = !scanning
-                    ) { Text(if (scanning) "扫描中…" else "扫描本地歌曲") }
+                    TextButton(onClick = {
+                        DownloadManager.allFilesAccessSettingsIntent(context)?.let {
+                            runCatching { context.startActivity(it) }
+                        }
+                    }) { Text("去开启") }
                 }
             }
-        } else {
-            LazyColumn(
-                state = listState,
+
+            songs.isEmpty() && (content?.folders ?: emptyList()).isEmpty() -> Box(
+                Modifier.weight(1f).fillMaxWidth()
+            ) {
+                EmptyState(
+                    "此文件夹是空的\n进入子文件夹找到歌曲后即可直接播放"
+                )
+            }
+
+            else -> LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // 文件夹行（在前）
+                items(content?.folders ?: emptyList(), key = { it.name }) { folder ->
+                    // v1.4.59 r15：当前播放歌曲属于该文件夹（含子目录）时
+                    // 文件夹行显示播放标志（名称+图标转主色）
+                    val folderPath = if (currentPath == null) folder.name
+                    else "$currentPath/${folder.name}"
+                    FolderRow(
+                        name = folder.name,
+                        songCount = folder.audioCount,
+                        isPlaying = currentSong?.let { cur ->
+                            cur.source == "local" && cur.id.startsWith("local:") &&
+                                cur.id.removePrefix("local:").startsWith("$folderPath/")
+                        } == true,
+                        onClick = {
+                            currentPath = if (currentPath == null) folder.name
+                            else "$currentPath/${folder.name}"
+                        }
+                    )
+                }
+                // 歌曲行（在后）
                 items(songs.size) { i ->
                     val song = songs[i]
                     SongRow(
                         song = song,
                         isFavorite = favorites.any { it.sameAs(song) },
+                        isCurrent = currentSong?.sameAs(song) == true,
                         onClick = { PlayerManager.setQueue(songs, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },
@@ -583,8 +470,7 @@ fun LocalSongsScreen(
                         onDownloadLyric = { lyricTarget = song },
                         selectionMode = select.active,
                         selected = select.isSelected(song),
-                        onSelect = { select.toggle(song) },
-                        modifier = if (select.active) Modifier else Modifier.dragReorder(dragState, i)
+                        onSelect = { select.toggle(song) }
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }
@@ -603,7 +489,7 @@ fun LocalSongsScreen(
         )
     }
 
-    // v1.4.39：单曲「下载歌词」对话框（搜索词可编辑：歌名 或 歌名+歌手）
+    // v1.4.39：单曲「下载歌词」对话框
     lyricTarget?.let { target ->
         com.solara.music.ui.components.LyricDownloadDialog(
             song = target,
@@ -616,112 +502,31 @@ fun LocalSongsScreen(
         )
     }
 
-    // v1.4.3：清空列表确认（只清记录，不删除文件）
-    if (pendingClear) {
+    // v1.4.58：文件操作公共链路（删除/重命名 + Scoped Storage 授权），
+    // 从本页抽出为公共组件，与下载管理页共用
+    LocalFileOpsHandler(
+        deleteTarget = pendingDelete,
+        onDeleteTargetChange = { pendingDelete = it },
+        renameTarget = pendingRename,
+        onRenameTargetChange = { pendingRename = it },
+        onDone = { message ->
+            scanToast = message
+            refreshFolder()
+        }
+    )
+
+    // v1.4.58：重命名当前文件夹
+    if (pendingFolderRename && currentPath != null) {
+        val path = currentPath!!
+        val oldName = path.substringAfterLast('/')
+        var newName by remember(path) { mutableStateOf(oldName) }
         AlertDialog(
-            onDismissRequest = { pendingClear = false },
-            title = { Text("清空本地歌曲列表") },
-            text = {
-                Text("移除列表中全部 ${songs.size} 条记录，不会删除手机里的音频文件。之后可通过「扫描本地歌曲」重新添加。")
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingClear = false
-                        Store.replaceDownloads(emptyList())
-                        scanToast = "列表已清空（文件未删除）"
-                    }
-                ) { Text("清空", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingClear = false }) { Text("取消") }
-            }
-        )
-    }
-
-    // 移除确认：删除文件 + 移出列表（v1.4.4：他建文件走系统授权）
-    if (pendingDelete != null) {
-        val song = pendingDelete!!
-        AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("移除本地歌曲") },
-            text = {
-                Text(
-                    "将「${song.artistName} - ${song.displayName}」移出本地歌曲列表，" +
-                        "并删除手机里的音频文件，无法恢复。"
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val target = song
-                    pendingDelete = null
-                    scope.launch {
-                        // 目标在播：彻底停止并释放文件句柄
-                        val cur = PlayerManager.currentSong.value
-                        if (cur != null && cur.sameAs(target)) {
-                            PlayerManager.stop()
-                            PlayerManager.playerOrNull?.let { p ->
-                                runCatching { p.stop(); p.clearMediaItems() }
-                            }
-                        }
-                        val result = withContext(Dispatchers.IO) {
-                            runCatching {
-                                DownloadManager.deleteLocalFileWithAuth(
-                                    context.applicationContext, target
-                                )
-                            }.getOrDefault(DownloadManager.LocalFileResult.FAILED)
-                        }
-                        when (result) {
-                            DownloadManager.LocalFileResult.DELETED -> {
-                                Store.removeDownload(target)
-                                PlayerManager.queue.value.forEachIndexed { i, s ->
-                                    if (s.sameAs(target)) {
-                                        PlayerManager.removeAt(i); return@forEachIndexed
-                                    }
-                                }
-                            }
-
-                            DownloadManager.LocalFileResult.NEEDS_AUTH -> {
-                                // v1.4.5：他建文件 → 自家选择框（推荐永久授权，
-                                // 开启后所有删除/重命名完全静默无弹窗）
-                                askAllFiles = PendingAllFiles(target, isDelete = true)
-                            }
-
-                            else -> {
-                                // NOT_FOUND：文件已不在，直接清记录
-                                Store.removeDownload(target)
-                                PlayerManager.queue.value.forEachIndexed { i, s ->
-                                    if (s.sameAs(target)) {
-                                        PlayerManager.removeAt(i); return@forEachIndexed
-                                    }
-                                }
-                                if (result == DownloadManager.LocalFileResult.FAILED) {
-                                    scanToast = "已移出列表，但音频文件删除失败"
-                                }
-                            }
-                        }
-                    }
-                }) { Text("移除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("取消") }
-            }
-        )
-    }
-
-    // 重命名：改本地文件名（沿用扩展名），并同步更新列表记录
-    if (pendingRename != null) {
-        val song = pendingRename!!
-        val oldBase = song.id.removePrefix("local:").substringBeforeLast('.', "")
-        var newName by remember(song.id) { mutableStateOf(oldBase) }
-        AlertDialog(
-            onDismissRequest = { pendingRename = null },
-            title = { Text("重命名本地歌曲") },
+            onDismissRequest = { pendingFolderRename = false },
+            title = { Text("重命名文件夹") },
             text = {
                 Column {
                     Text(
-                        "修改文件名（不含扩展名）。建议保持「歌手 - 歌名」格式，" +
-                            "列表标题和歌手会按此重新解析。",
+                        "修改当前文件夹的名称。文件夹内有歌曲正在播放时会先停止播放。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -729,7 +534,7 @@ fun LocalSongsScreen(
                     OutlinedTextField(
                         value = newName,
                         onValueChange = { newName = it },
-                        label = { Text("文件名") },
+                        label = { Text("文件夹名") },
                         singleLine = true,
                         shape = MaterialTheme.shapes.large
                     )
@@ -738,53 +543,28 @@ fun LocalSongsScreen(
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val target = song
                         val input = newName.trim()
-                        pendingRename = null
-                        if (input.isBlank() || input == oldBase) return@TextButton
+                        pendingFolderRename = false
+                        if (input.isBlank() || input == oldName) return@TextButton
                         scope.launch {
-                            // 目标文件正在播放：彻底停止并清空播放器释放文件句柄
-                            val cur = PlayerManager.currentSong.value
-                            if (cur != null && cur.sameAs(target)) {
+                            // 文件夹内歌曲在播：先停止（文件句柄占用会导致重命名失败）
+                            val playing = PlayerManager.currentSong.value
+                            if (playing != null && LocalCoverExtractor.isLocalSong(playing)) {
                                 PlayerManager.stop()
                                 PlayerManager.playerOrNull?.let { p ->
                                     runCatching { p.stop(); p.clearMediaItems() }
                                 }
                             }
-                            val (result, newFile) = withContext(Dispatchers.IO) {
+                            val newRel = withContext(Dispatchers.IO) {
                                 runCatching {
-                                    DownloadManager.renameLocalFileWithAuth(
-                                        context.applicationContext, target, input
-                                    )
-                                }.getOrDefault(
-                                    DownloadManager.RenameResult.FAILED to null
-                                )
+                                    DownloadManager.renameFolder(path, input)
+                                }.getOrNull()
                             }
-                            when (result) {
-                                DownloadManager.RenameResult.OK -> {
-                                    Store.renameDownload(target, newFile!!)
-                                    LocalCoverExtractor.invalidate(target)
-                                    LocalCoverExtractor.bumpRevision()
-                                    PlayerManager.replaceSong(
-                                        target,
-                                        Store.downloads.value.firstOrNull {
-                                            it.id == "local:$newFile"
-                                        } ?: target.copy(id = "local:$newFile")
-                                    )
-                                }
-
-                                DownloadManager.RenameResult.NEEDS_AUTH -> {
-                                    // v1.4.5：他建文件 → 自家选择框
-                                    askAllFiles = PendingAllFiles(
-                                        target, isDelete = false, renameInput = input
-                                    )
-                                }
-
-                                DownloadManager.RenameResult.NOT_FOUND ->
-                                    scanToast = "重命名失败：找不到音频文件"
-
-                                else ->
-                                    scanToast = "重命名失败，请检查文件是否被占用"
+                            if (newRel != null) {
+                                currentPath = newRel
+                                scanToast = "文件夹已重命名"
+                            } else {
+                                scanToast = "重命名失败（需要「所有文件访问」权限，且不能与现有文件夹重名）"
                             }
                         }
                     },
@@ -792,81 +572,7 @@ fun LocalSongsScreen(
                 ) { Text("保存") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingRename = null }) { Text("取消") }
-            }
-        )
-    }
-    // v1.4.5：他建文件操作的自家选择框——
-    // 「去开启」= 跳系统设置开「所有文件访问」（一次开启，永久静默）；
-    // 「仅此一次」= 旧流程（系统单次授权弹窗）
-    if (askAllFiles != null) {
-        val pending = askAllFiles!!
-        AlertDialog(
-            onDismissRequest = { askAllFiles = null },
-            title = { Text("需要文件管理权限") },
-            text = {
-                Text(
-                    "「${pending.song.displayName}」由其他应用创建，系统要求授权后才能" +
-                        (if (pending.isDelete) "删除" else "重命名") + "。\n\n" +
-                        "推荐开启「所有文件访问」：只需设置一次，之后删除、重命名" +
-                        "任何歌曲都不会再弹窗。"
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    askAllFiles = null
-                    val intent = DownloadManager.allFilesAccessSettingsIntent(context)
-                    if (intent != null) {
-                        pendingAllFiles = pending
-                        runCatching { context.startActivity(intent) }
-                    } else {
-                        // 系统不支持直达设置页：退回单次授权
-                        scope.launch {
-                            val sender = withContext(Dispatchers.IO) {
-                                if (pending.isDelete) {
-                                    DownloadManager.createDeleteAuth(context, pending.song)
-                                } else {
-                                    DownloadManager.createRenameAuth(context, pending.song)
-                                }
-                            }
-                            if (sender != null) {
-                                pendingAuth = PendingAuth(
-                                    pending.song, pending.isDelete, pending.renameInput
-                                )
-                                runCatching {
-                                    authLauncher.launch(IntentSenderRequestBuilder.build(sender))
-                                }
-                            } else {
-                                scanToast = "当前系统不支持此授权方式"
-                            }
-                        }
-                    }
-                }) { Text("去开启（推荐）") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    askAllFiles = null
-                    // 仅此一次：走旧的单次系统授权弹窗
-                    scope.launch {
-                        val sender = withContext(Dispatchers.IO) {
-                            if (pending.isDelete) {
-                                DownloadManager.createDeleteAuth(context, pending.song)
-                            } else {
-                                DownloadManager.createRenameAuth(context, pending.song)
-                            }
-                        }
-                        if (sender != null) {
-                            pendingAuth = PendingAuth(
-                                pending.song, pending.isDelete, pending.renameInput
-                            )
-                            runCatching {
-                                authLauncher.launch(IntentSenderRequestBuilder.build(sender))
-                            }
-                        } else {
-                            scanToast = "当前系统不支持此授权方式"
-                        }
-                    }
-                }) { Text("仅此一次") }
+                TextButton(onClick = { pendingFolderRename = false }) { Text("取消") }
             }
         )
     }
@@ -882,52 +588,79 @@ fun LocalSongsScreen(
             }
         )
     }
+}
 
-    // v1.4.26：批量移出列表确认（仅清记录，不删除文件；删文件走单曲菜单）
-    if (showBatchRemoveConfirm) {
-        AlertDialog(
-            onDismissRequest = { showBatchRemoveConfirm = false },
-            title = { Text("移出本地歌曲列表") },
-            text = {
-                Text(
-                    "将所选的 ${select.selected.size} 首歌曲移出列表（仅清除记录，不删除手机里的音频文件）。"
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val n = select.selected.size
-                    Store.removeDownloads(select.selectedSongs(songs))
-                    showBatchRemoveConfirm = false
-                    select.exit()
-                    onShowMessage("已移出 $n 首（文件未删除）")
-                }) { Text("移出", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showBatchRemoveConfirm = false }) { Text("取消") }
-            }
-        )
-    }
-
-    // v1.4.7：App 内文件夹浏览器——浏览进子目录，确认后才扫描
-    if (showFolderPicker) {
-        FolderPickerDialog(
-            initialRelPath = Store.scanFolder.value,
-            onDismiss = { showFolderPicker = false },
-            onConfirm = { relPath ->
-                showFolderPicker = false
-                if (relPath.isBlank()) {
-                    scanToast = "请选择一个文件夹（不支持扫描内部存储根目录）"
-                } else {
-                    Store.saveScanFolder(relPath)
-                    runScan(relPath)
+/**
+ * v1.4.58：文件夹行——图标 + 名称 + 音频计数 + 右箭头，
+ * 样式对齐 SongRow（16dp 圆角卡片、surface 底、52dp 图标位）。
+ * v1.4.59 r15：isPlaying——当前播放歌曲属于该文件夹（含子目录）时
+ * 名称+图标转主色，名称前加 GraphicEq 播放标志（对齐歌单卡片样式）。
+ */
+@Composable
+private fun FolderRow(
+    name: String,
+    songCount: Int,
+    isPlaying: Boolean = false,
+    onClick: () -> Unit
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier.size(52.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Folder,
+                contentDescription = null,
+                tint = if (isPlaying) accent else MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.size(30.dp)
+            )
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isPlaying) {
+                    Icon(
+                        imageVector = Icons.Filled.GraphicEq,
+                        contentDescription = "正在播放",
+                        tint = accent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
                 }
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (isPlaying) accent else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
+            Text(
+                text = if (songCount > 0) "$songCount 首" else "文件夹",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
 
-/** IntentSender → IntentSenderRequest 的薄封装（避免 UI 层直接依赖 androidx 类型别名混乱）。 */
-private object IntentSenderRequestBuilder {
-    fun build(sender: android.content.IntentSender): androidx.activity.result.IntentSenderRequest =
-        androidx.activity.result.IntentSenderRequest.Builder(sender).build()
-}

@@ -87,6 +87,54 @@ object PlaybackCache {
     fun keyOf(source: String, id: String, br: String): String = "$source:$id:$br"
 
     /**
+     * v1.4.59 r19：后台补全缓存——把部分缓存的歌补到 100%。
+     *
+     * 背景：播放器边播边缓存只写"预读窗口"内的数据（约 50 秒），
+     * 听一半就切走的歌缓存不完整；断网兜底（v1.4.29 直链持久化）
+     * 要求 isFullyCached，部分缓存用不上——用户反馈"听过的歌断网
+     * 还是放不了"。
+     *
+     * 实现：CacheWriter 对指定 key 做全区间下载补全（已缓存 span
+     * 自动跳过，只补缺口）。与播放器的边播边写共用 SimpleCache 锁，
+     * 并发安全；补全期间正常播放不受影响（CacheDataSource 优先读
+     * 已有缓存，缺口部分各自下载不冲突）。
+     *
+     * @param context 用于构造上游网络数据源
+     * @param key 缓存 key（source:id:br）
+     * @param url 音频直链（与播放用的同一 URL）
+     * @return 补全成功（或本来就全量）返回 true；失败/取消返回 false
+     */
+    @Synchronized
+    fun backfill(
+        context: android.content.Context,
+        key: String,
+        url: String
+    ): Boolean {
+        val c = cache ?: return false
+        return runCatching {
+            // 本来就全量：无需补全
+            if (isFullyCached(key)) return true
+            // media3 1.3.1：CacheDataSource.Factory（1.5 起才有 Builder）
+            val cacheDataSource = androidx.media3.datasource.cache.CacheDataSource.Factory()
+                .setCache(c)
+                .setUpstreamDataSourceFactory(
+                    androidx.media3.datasource.DefaultDataSource.Factory(context.applicationContext)
+                )
+                .setCacheKeyFactory { dataSpec -> dataSpec.key ?: dataSpec.uri.toString() }
+                .setFlags(androidx.media3.datasource.cache.CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                .createDataSourceForDownloading()
+            val spec = androidx.media3.datasource.DataSpec.Builder()
+                .setUri(android.net.Uri.parse(url))
+                .setKey(key)
+                .build()
+            androidx.media3.datasource.cache.CacheWriter(
+                cacheDataSource, spec, ByteArray(64 * 1024), null
+            ).cache()
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
      * 该 key 的音频是否已 100% 缓存（v1.4.29：直链过期离线兜底的前提）。
      * contentLength 由 CacheDataSource 写入时自动记录（无记录时按未全量
      * 处理）；Media3 1.2.1 无 isFullyCached(key)，用 isCached(0, len)

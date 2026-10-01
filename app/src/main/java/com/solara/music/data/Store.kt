@@ -37,7 +37,14 @@ data class AppSettings(
      * 重听秒开零流量；LRU 自动淘汰（满了删最久没听的）。默认 30GB
      * （约 3000 首 320k），0 = 关闭缓存。
      */
-    val playbackCacheLimitBytes: Long = 30L * 1024 * 1024 * 1024
+    val playbackCacheLimitBytes: Long = 30L * 1024 * 1024 * 1024,
+    /**
+     * 左右声道平衡（v1.4.59）：0.5 = 居中（左右等音量），
+     * 0 = 全左声道，1 = 全右声道。ExoPlayer setVolume(left, right) 实现，
+     * 仅 App 内生效（不碰系统音量/全局效果）。单声道耳机/蓝牙单耳、
+     * 某些歌只录了一个声道的场景实用。
+     */
+    val channelBalance: Float = 0.5f
 )
 
 /**
@@ -81,6 +88,8 @@ object Store {
     private const val KEY_LYRIC_TIMESTAMPS = "lyric_timestamps"
     // 扫描文件夹记忆（v1.4.3：null=默认 Music/D_Music）
     private const val KEY_SCAN_FOLDER = "scan_folder"
+    // 本地歌曲页浏览位置记忆（v1.4.58：null=内部存储根）
+    private const val KEY_LOCAL_BROWSE_PATH = "local_browse_path"
 
     // 播放直链持久化（v1.4.29：key=source:id:br → 直链 URL。
     // API 故障时的离线兜底：音频已全量缓存的歌用过期直链也能播——
@@ -161,6 +170,7 @@ object Store {
         downloads.value = readSongs(KEY_DOWNLOADS)
         recent.value = readSongs(KEY_RECENT)
         scanFolder.value = prefs.getString(KEY_SCAN_FOLDER, null)
+        localBrowsePath.value = prefs.getString(KEY_LOCAL_BROWSE_PATH, null)
         MusicApi.baseUrl = settings.value.apiBaseUrl
     }
 
@@ -679,13 +689,42 @@ object Store {
 
     fun addDownload(song: Song) {
         if (downloads.value.any { it.sameAs(song) }) return
-        downloads.value = downloads.value + song
+        // v1.4.58：新完成的下载插到最前（下载管理页「已完成」区
+        // 最新下载优先可见，对齐任务列表新任务插头部的行为）
+        downloads.value = listOf(song) + downloads.value
         writeSongs(KEY_DOWNLOADS, downloads.value)
     }
 
     fun removeDownload(song: Song) {
         downloads.value = downloads.value.filterNot { it.sameAs(song) }
         writeSongs(KEY_DOWNLOADS, downloads.value)
+    }
+
+    /**
+     * v1.4.58 第七轮：歌曲元数据变更后同步替换所有引用处——
+     * 收藏 / 歌单 / 最近播放（队列由 PlayerManager.replaceSong 处理）。
+     * 重命名文件后调用，保证各列表显示与新文件名一致。
+     */
+    private fun replaceSongEverywhere(old: Song, new: Song) {
+        // 收藏
+        if (favorites.value.any { it.sameAs(old) }) {
+            favorites.value = favorites.value.map { if (it.sameAs(old)) new else it }
+            writeSongs(KEY_FAVORITES, favorites.value)
+        }
+        // 歌单（可能存在于多个歌单）
+        if (playlists.value.any { p -> p.songs.any { it.sameAs(old) } }) {
+            playlists.value = playlists.value.map { p ->
+                if (p.songs.any { it.sameAs(old) }) {
+                    p.copy(songs = p.songs.map { if (it.sameAs(old)) new else it })
+                } else p
+            }
+            writePlaylists()
+        }
+        // 最近播放
+        if (recent.value.any { it.sameAs(old) }) {
+            recent.value = recent.value.map { if (it.sameAs(old)) new else it }
+            writeSongs(KEY_RECENT, recent.value)
+        }
     }
 
     /** v1.4.26：批量移出本地歌曲列表（仅清记录，不删除文件）。 */
@@ -716,11 +755,20 @@ object Store {
      * 本地歌曲重命名后更新记录（文件已由 DownloadManager.renameLocalFile 改名）。
      * 按新文件名重新解析 歌手/歌名，id 同步为新文件名。
      * 封面 URL 缓存 key（文件名）同步迁移。
+     *
+     * v1.4.58 第六轮：在线下载记录（source != local）改名后 id 变成
+     * local:xxx（混合记录）。
+     * v1.4.58 第七轮：在线记录的 name/artist 也按新文件名重新解析——
+     * 文件名与列表显示必须一致（用户反馈：改名后列表还是旧名字，
+     * 与本地歌曲行为不一致）
      */
     fun renameDownload(song: Song, newFileName: String) {
         val idx = downloads.value.indexOfFirst { it.sameAs(song) }
         if (idx < 0) return
-        val base = newFileName.substringBeforeLast('.', newFileName)
+        // v1.4.58：newFileName 可能含相对路径前缀（Music/DTS/xxx.mp3）——
+        // 歌名解析只看纯文件名部分
+        val pureName = newFileName.substringAfterLast('/')
+        val base = pureName.substringBeforeLast('.', pureName)
         val dot = base.indexOf(" - ")
         val (artist, name) = if (dot > 0) {
             base.substring(0, dot).trim() to base.substring(dot + 3).trim()
@@ -736,6 +784,9 @@ object Store {
         writeSongs(KEY_DOWNLOADS, downloads.value)
         // 封面缓存 key 迁移：旧文件名 → 新文件名
         migrateLocalCoverKey(song, updated)
+        // v1.4.58 第七轮：收藏/歌单/最近播放同步替换——文件名与列表
+        // 显示必须一致（用户反馈：改名后歌单里还是旧名字）
+        replaceSongEverywhere(song, updated)
     }
 
     // ---------- 本地歌曲封面 URL 缓存（v1.4.0） ----------
@@ -751,17 +802,32 @@ object Store {
         else prefs.edit().putString(KEY_SCAN_FOLDER, path).apply()
     }
 
-    /** 读取本地歌曲匹配到的在线封面 URL；无返回 null。key=原始文件名。 */
+    // ---------- 本地歌曲页浏览位置（v1.4.58） ----------
+
+    /** 本地歌曲页最后浏览的文件夹（跨页面/重启保留）；null = 内部存储根。 */
+    val localBrowsePath = MutableStateFlow<String?>(null)
+
+    fun saveLocalBrowsePath(path: String?) {
+        localBrowsePath.value = path
+        if (path == null) prefs.edit().remove(KEY_LOCAL_BROWSE_PATH).apply()
+        else prefs.edit().putString(KEY_LOCAL_BROWSE_PATH, path).apply()
+    }
+
+    /**
+     * 读取本地歌曲匹配到的在线封面 URL；无返回 null。key=原始文件名。
+     * v1.4.58 第六轮：id 有 local: 前缀即可（含在线歌改名后的混合记录）
+     */
     fun localCoverUrl(song: Song): String? {
-        if (song.source != "local" || !song.id.startsWith("local:")) return null
-        val fileName = song.id.removePrefix("local:")
+        if (!song.id.startsWith("local:")) return null
+        // v1.4.58：id 可能含路径前缀，key 统一用纯文件名（兼容旧记录）
+        val fileName = song.id.removePrefix("local:").substringAfterLast('/')
         return readLocalCovers().optString(fileName).takeIf { it.isNotBlank() }
     }
 
     /** 保存本地歌曲匹配到的在线封面 URL。 */
     fun saveLocalCoverUrl(song: Song, url: String) {
-        if (song.source != "local" || !song.id.startsWith("local:")) return
-        val fileName = song.id.removePrefix("local:")
+        if (!song.id.startsWith("local:")) return
+        val fileName = song.id.removePrefix("local:").substringAfterLast('/')
         val o = readLocalCovers()
         o.put(fileName, url)
         prefs.edit().putString(KEY_LOCAL_COVERS, o.toString()).apply()
@@ -773,8 +839,8 @@ object Store {
      * 不清掉会挡住用户新选的封面。
      */
     fun clearLocalCoverUrl(song: Song) {
-        if (song.source != "local" || !song.id.startsWith("local:")) return
-        val fileName = song.id.removePrefix("local:")
+        if (!song.id.startsWith("local:")) return
+        val fileName = song.id.removePrefix("local:").substringAfterLast('/')
         val o = readLocalCovers()
         if (!o.has(fileName)) return
         o.remove(fileName)
@@ -993,8 +1059,9 @@ object Store {
         }.getOrDefault(org.json.JSONObject())
 
     private fun migrateLocalCoverKey(old: Song, new: Song) {
-        val oldName = old.id.removePrefix("local:")
-        val newName = new.id.removePrefix("local:")
+        // v1.4.58：id 可能含路径前缀，key 统一用纯文件名
+        val oldName = old.id.removePrefix("local:").substringAfterLast('/')
+        val newName = new.id.removePrefix("local:").substringAfterLast('/')
         if (oldName == newName) return
         val o = readLocalCovers()
         val url = o.optString(oldName).takeIf { it.isNotBlank() } ?: return
@@ -1031,7 +1098,10 @@ object Store {
             accentColor = o.optString("accentColor", "mint").ifBlank { "mint" },
             playbackCacheLimitBytes = o.optLong(
                 "playbackCacheLimitBytes", 30L * 1024 * 1024 * 1024
-            )
+            ),
+            channelBalance = runCatching {
+                o.optDouble("channelBalance", 0.5).toFloat().coerceIn(0f, 1f)
+            }.getOrDefault(0.5f)
         )
     }.getOrDefault(AppSettings())
 
@@ -1053,6 +1123,7 @@ object Store {
         put("radarGenres", JSONArray(s.radarGenres))
         put("accentColor", s.accentColor)
         put("playbackCacheLimitBytes", s.playbackCacheLimitBytes)
+        put("channelBalance", s.channelBalance.toDouble())
     }.toString()
 
     private fun songToJson(s: Song): JSONObject = JSONObject().apply {

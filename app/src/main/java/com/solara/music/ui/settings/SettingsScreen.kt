@@ -30,6 +30,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -108,6 +109,63 @@ fun SettingsScreen() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+
+        // v1.4.59：左右声道平衡（播放音质后、外观前）——
+        // ExoPlayer 左右声道独立音量，仅 App 内生效（不影响系统音量）。
+        // 单声道耳机/蓝牙单耳、老歌只录一个声道时把声像拉到有声那侧。
+        SettingsCard(title = "左右声道平衡") {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "左",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Slider(
+                    value = settings.channelBalance,
+                    onValueChange = { v ->
+                        Store.updateSettings { it.copy(channelBalance = v) }
+                    },
+                    valueRange = 0f..1f,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 12.dp)
+                )
+                Text(
+                    text = "右",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = when {
+                        settings.channelBalance < 0.45f -> "偏左 ${((0.5f - settings.channelBalance) * 200).toInt()}%"
+                        settings.channelBalance > 0.55f -> "偏右 ${((settings.channelBalance - 0.5f) * 200).toInt()}%"
+                        else -> "居中"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f)
+                )
+                if (settings.channelBalance != 0.5f) {
+                    OutlinedButton(onClick = {
+                        Store.updateSettings { it.copy(channelBalance = 0.5f) }
+                    }) { Text("居中") }
+                }
+            }
+            Text(
+                text = "仅在本应用内生效（不影响系统音量）；单声道耳机或某声道无声时调节",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
             )
         }
 

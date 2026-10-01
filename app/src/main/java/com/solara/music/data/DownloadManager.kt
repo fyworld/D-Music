@@ -89,6 +89,12 @@ object DownloadManager {
     private var notifContext: Context? = null
 
     /**
+     * v1.4.58：本批次累计下载完成数（DONE 任务即时从 tasks 移除后，
+     * 通知「下载中 n/m」的完成计数来源）。批次结束（全部任务结束）归零。
+     */
+    @Volatile private var batchDoneCount = 0
+
+    /**
      * 活动下载的 OkHttp Call（v1.4.23）：key=任务 id。
      * 协程 cancel 杀不掉阻塞中的 execute()——必须 call.cancel() 硬中断，
      * 否则"取消下载"后文件仍在后台继续写。
@@ -141,7 +147,9 @@ object DownloadManager {
 
             val all = tasks.value
             val active = all.filter { it.status == DownloadStatus.DOWNLOADING || it.status == DownloadStatus.PENDING }
-            val done = all.count { it.status == DownloadStatus.DONE }
+            // v1.4.58：DONE 任务即时移除（Store.downloads 接管），
+            // done 计数改用本批次累计完成数
+            val done = batchDoneCount
             val failed = all.count { it.status == DownloadStatus.FAILED }
 
             val contentIntent = PendingIntent.getActivity(
@@ -161,7 +169,7 @@ object DownloadManager {
                 val totalProgress = active.sumOf { it.progress.toDouble() } / active.size
                 val builder = NotificationCompat.Builder(context, DOWNLOAD_CHANNEL_ID)
                     .setSmallIcon(R.drawable.ic_stat_download)
-                    .setContentTitle("下载中 ${done}/${all.size}")
+                    .setContentTitle("下载中 ${done}/${done + active.size + failed}")
                     .setContentText("${current.song.displayName} - ${current.song.artistName}")
                     .setProgress(100, (totalProgress * 100).toInt(), false)
                     .setOngoing(true)
@@ -193,6 +201,8 @@ object DownloadManager {
                             .cancel(DOWNLOAD_NOTIFICATION_ID)
                     }
                 }
+                // v1.4.58：批次结束，计数归零（下次 enqueue 重新累计）
+                batchDoneCount = 0
             } else {
                 // 任务列表被清空（removeTask/clearFinished）：撤掉残留的进度通知
                 nm.cancel(DOWNLOAD_NOTIFICATION_ID)
@@ -240,7 +250,9 @@ object DownloadManager {
     }
 
     fun clearFinished() {
-        updateTask { list -> list.filter { it.status == DownloadStatus.DOWNLOADING } }
+        // v1.4.58：只清失败任务——已完成歌曲由 Store.downloads 持久化，
+        // 下载完成即从内存任务列表移除，页面「已完成」区不受影响
+        updateTask { list -> list.filter { it.status != DownloadStatus.FAILED } }
         refreshDownloadNotification()
     }
 
@@ -254,10 +266,14 @@ object DownloadManager {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return emptyList()
         val selection =
             "${MediaStore.Audio.Media.DATA} LIKE ? AND ${MediaStore.Audio.Media.DISPLAY_NAME}=?"
-        val isImported = song.source == "local" && song.id.startsWith("local:")
+        val isImported = song.id.startsWith("local:")
         val fileNames = mutableListOf<String>()
         if (isImported) {
-            fileNames.add(song.id.removePrefix("local:"))
+            // v1.4.58：id 可能含相对路径（local:Music/DTS/xxx.dts）——
+            // 取纯文件名查（DATA 目录过滤见下方 dirFilter）。
+            // v1.4.58 第六轮：在线下载歌改名后 id 也是 local:xxx（混合记录），
+            // 同样按 id 精确查（改名后文件名不再匹配「歌手 - 歌名」派生规则）
+            fileNames.add(song.id.removePrefix("local:").substringAfterLast('/'))
         } else {
             listOf("mp3", "flac").forEach { ext ->
                 fileNames.add(safe("${song.artistName} - ${song.displayName}.$ext"))
@@ -308,7 +324,23 @@ object DownloadManager {
         }
         val ctx = context.applicationContext
         val uris = queryLocalUris(ctx, song)
-        if (uris.isEmpty()) return LocalFileResult.NOT_FOUND
+        if (uris.isEmpty()) {
+            // v1.4.58：MediaStore 查不到（.dts 等不收录格式 / id 含路径的
+            // 文件）——有所有文件访问权限时文件系统直删。
+            // v1.4.58 第六轮：id 有 local: 前缀即可（含混合记录）
+            if (song.id.startsWith("local:") && hasAllFilesAccess()) {
+                val ref = song.id.removePrefix("local:")
+                val external = Environment.getExternalStorageDirectory()
+                if (external != null) {
+                    val f = File(external, ref)
+                    if (f.exists()) {
+                        val ok = runCatching { f.delete() }.getOrDefault(false)
+                        return if (ok) LocalFileResult.DELETED else LocalFileResult.FAILED
+                    }
+                }
+            }
+            return LocalFileResult.NOT_FOUND
+        }
 
         // 先删自有的（能删掉的），剩下的就是需要授权的
         val remaining = uris.filter { uri ->
@@ -386,8 +418,9 @@ object DownloadManager {
                 "${MediaStore.Audio.Media.DATA} LIKE ? AND ${MediaStore.Audio.Media.DISPLAY_NAME}=?"
 
             val fileNames = mutableListOf<String>()
-            // 本地扫描导入的歌曲：id 里存了原始文件名，直接精确删除
-            val isImported = song.source == "local" && song.id.startsWith("local:")
+            // 本地扫描导入的歌曲：id 里存了原始文件名，直接精确删除。
+            // v1.4.58 第六轮：id 有 local: 前缀即可（含混合记录）
+            val isImported = song.id.startsWith("local:")
             if (isImported) {
                 fileNames.add(song.id.removePrefix("local:"))
             } else {
@@ -418,8 +451,10 @@ object DownloadManager {
         } else {
             val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "D_Music")
             val fileNames = mutableListOf<String>()
-            if (song.source == "local" && song.id.startsWith("local:")) {
-                fileNames.add(song.id.removePrefix("local:"))
+            // v1.4.58 第六轮：id 有 local: 前缀即可（含混合记录）
+            if (song.id.startsWith("local:")) {
+                // v1.4.58：id 可能含路径前缀，取纯文件名
+                fileNames.add(song.id.removePrefix("local:").substringAfterLast('/'))
             } else {
                 listOf("mp3", "flac").forEach { ext ->
                     fileNames.add(safe("${song.artistName} - ${song.displayName}.$ext"))
@@ -442,11 +477,33 @@ object DownloadManager {
     fun findLocalPlayableUri(context: Context, song: Song): String? {
         val safe = fun(name: String) = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // 本地扫描导入的歌曲：id 里存了原始文件名（local:xxx.mp3），直接精确查询
-            if (song.source == "local" && song.id.startsWith("local:")) {
-                val fileName = song.id.removePrefix("local:")
+            // 本地导入的歌曲：id 里存了文件定位信息，直接精确解析。
+            // v1.4.58 第六轮：id 有 local: 前缀即文件定位记录（含在线下载
+            // 歌改名后的混合记录——source 仍是在线源但 id 已指向本地文件）
+            if (song.id.startsWith("local:")) {
+                val ref = song.id.removePrefix("local:")
+                // v1.4.58：新 id 含相对路径（local:Music/DTS/xxx.dts）——
+                // 文件系统直查，精确且不依赖 MediaStore（.dts 等格式媒体库
+                // 不收录）。需「所有文件访问」权限（文件夹浏览本身就要它）
+                if (ref.contains('/') && hasAllFilesAccess()) {
+                    val external = Environment.getExternalStorageDirectory()
+                    val f = File(external, ref)
+                    if (f.exists() && f.canRead()) return Uri.fromFile(f).toString()
+                }
+                // 旧 id（纯文件名）或新 id 文件已移动：MediaStore 全库精确查
+                val fileName = ref.substringAfterLast('/')
                 val exact = queryByDisplayName(context, fileName)
                 if (exact != null) return exact
+                // v1.4.58：MediaStore 不收录 .dts（媒体扫描器不认该扩展名），
+                // 按浏览目录路径直查文件系统兜底（有所有文件访问权限时）
+                if (fileName.endsWith(".dts", true) && hasAllFilesAccess()) {
+                    val rel = Store.localBrowsePath.value
+                    if (!rel.isNullOrBlank()) {
+                        val external = Environment.getExternalStorageDirectory()
+                        val f = File(external, "${rel.trimStart('/')}/$fileName")
+                        if (f.exists() && f.canRead()) return Uri.fromFile(f).toString()
+                    }
+                }
             }
 
             // 用 DATA LIKE 匹配目录：RELATIVE_PATH 各 ROM 格式不一致，不可靠
@@ -497,7 +554,14 @@ object DownloadManager {
             for (dir in dirs) {
                 // 本地扫描导入的歌曲：id 里存了原始文件名，直接精确匹配
                 if (song.source == "local" && song.id.startsWith("local:")) {
-                    val f = File(dir, song.id.removePrefix("local:"))
+                    // v1.4.58：id 含相对路径时从外部存储根直查
+                    val ref = song.id.removePrefix("local:")
+                    if (ref.contains('/')) {
+                        val external = Environment.getExternalStorageDirectory()
+                        val f = external?.let { File(it, ref) }
+                        if (f != null && f.exists()) return Uri.fromFile(f).toString()
+                    }
+                    val f = File(dir, ref.substringAfterLast('/'))
                     if (f.exists()) return Uri.fromFile(f).toString()
                 }
                 listOf("flac", "mp3").forEach { ext ->
@@ -578,9 +642,9 @@ object DownloadManager {
         return scanViaMediaStore(context, folderPath, result)
     }
 
-    /** 文件系统扫描支持的扩展名（小写，不带点）。 */
+    /** 文件系统扫描支持的扩展名（小写，不带点）。v1.4.58：+dts。 */
     private val AUDIO_EXTS =
-        listOf("mp3", "flac", "m4a", "aac", "ogg", "wav", "ape", "wma")
+        listOf("mp3", "flac", "m4a", "aac", "ogg", "wav", "ape", "wma", "dts")
 
     /**
      * 相对路径 → 绝对路径根目录（如 "Music/D_Music" →
@@ -690,14 +754,92 @@ object DownloadManager {
     }
 
     /**
+     * v1.4.58：文件夹浏览——列出某目录的直接内容，供本地歌曲页浏览。
+     * 返回 null = 无权限读取（提示去开「所有文件访问」）。
+     * - folders：直接子文件夹（过滤隐藏目录、Android/data、Android/obb），
+     *   按名称排序，含直接子音频计数（不递归）
+     * - songs：直接子音频文件（songFromFileName 解析，按文件名排序）
+     * 计数与解析都在调用方 IO 线程执行（本方法做磁盘 IO，勿在主线程调）。
+     */
+    fun listFolder(relPath: String?): FolderContent? {
+        val external = Environment.getExternalStorageDirectory() ?: return null
+        val dir = if (relPath.isNullOrBlank()) external else File(external, relPath.trimStart('/'))
+        val list = runCatching { dir.listFiles() }.getOrNull() ?: return null
+        val folders = list
+            .filter { it.isDirectory && !it.name.startsWith(".") }
+            .filterNot { it.parentFile?.name == "Android" && (it.name == "data" || it.name == "obb") }
+            .sortedBy { it.name.lowercase() }
+            .map { f ->
+                val count = runCatching {
+                    f.listFiles()?.count { it.isFile && it.extension.lowercase() in AUDIO_EXTS } ?: 0
+                }.getOrDefault(0)
+                FolderEntry(f.name, count)
+            }
+        val songs = list
+            .filter { it.isFile && it.extension.lowercase() in AUDIO_EXTS }
+            .sortedBy { it.name.lowercase() }
+            .mapNotNull { songFromFileName(it.name, relPath) }
+        return FolderContent(folders, songs)
+    }
+
+    /** v1.4.58：文件夹浏览结果（子文件夹 + 直接子音频）。 */
+    data class FolderContent(
+        val folders: List<FolderEntry>,
+        val songs: List<Song>
+    )
+
+    /** v1.4.58：子文件夹条目（名称 + 直接子音频计数，不递归）。 */
+    data class FolderEntry(
+        val name: String,
+        val audioCount: Int
+    )
+
+    /**
+     * v1.4.58：songFromFileName 的公开包装（供文件夹浏览用）。
+     * dirRel：文件所在目录相对路径（null=根），编入 song.id 供精确定位。
+     */
+    fun songFromFileNamePublic(fileName: String, dirRel: String? = null): Song? =
+        songFromFileName(fileName, dirRel)
+
+    /**
+     * v1.4.58：重命名文件夹（仅支持有「所有文件访问」权限的文件系统路径）。
+     * relPath 为当前目录相对路径，newName 为新文件夹名（不含路径）。
+     * 返回新的相对路径；失败返回 null。
+     * 目标文件夹内有文件正被本 App 播放时应先停止播放（调用方负责）。
+     */
+    fun renameFolder(relPath: String, newName: String): String? {
+        if (!hasAllFilesAccess()) return null
+        val safe = newName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        if (safe.isEmpty()) return null
+        val external = Environment.getExternalStorageDirectory() ?: return null
+        val dir = File(external, relPath.trimStart('/'))
+        val parent = dir.parentFile ?: return null
+        val target = File(parent, safe)
+        if (!dir.exists() || !dir.isDirectory) return null
+        if (target.exists()) return null // 重名冲突
+        return runCatching {
+            if (dir.renameTo(target)) {
+                val parentRel = relPath.trim('/').substringBeforeLast('/', "")
+                return if (parentRel.isBlank()) safe else "$parentRel/$safe"
+            }
+            null
+        }.getOrNull()
+    }
+
+    /**
      * 从「歌手 - 歌名.mp3」文件名反推 Song。
      * v1.4.3：支持 mp3/flac/m4a/aac/ogg/wav 等常见格式。
      * 无 " - " 分隔时歌名=整个文件名（去扩展名）、歌手=未知。
      * v1.4.28：修复大写扩展名（.MP3/.FLAC）残留歌名——removeSuffix
      * 大小写敏感删不掉 .MP3，endsWith(ignoreCase) 已保证后缀长度
      * 与 ext 一致，直接按长度截断。
+     * v1.4.58：dirRel（文件所在目录的相对路径，null=内部存储根）编入
+     * id——id 形如 "local:Music/DTS/xxx.dts"。播放/删除/重命名按路径
+     * 精确定位文件，不再依赖 MediaStore（.dts 等格式媒体库不收录），
+     * 也不再依赖「用户当前浏览到哪个目录」。旧 id（纯文件名）兼容：
+     * 各链路先按 id 是否含 "/" 分流。
      */
-    private fun songFromFileName(fileName: String): Song? {
+    private fun songFromFileName(fileName: String, dirRel: String? = null): Song? {
         val ext = AUDIO_EXTENSIONS.firstOrNull { fileName.endsWith(it, ignoreCase = true) }
             ?: return null
         val base = fileName.dropLast(ext.length)
@@ -709,17 +851,19 @@ object DownloadManager {
             "" to base.trim()
         }
         if (name.isEmpty()) return null
+        val idSuffix = if (dirRel.isNullOrBlank()) fileName
+        else "${dirRel.trim('/')}/$fileName"
         return Song(
-            id = "local:$fileName",
+            id = "local:$idSuffix",
             name = name,
             artist = artist,
             source = "local"
         )
     }
 
-    /** 本地扫描支持的音频扩展名（小写）。 */
+    /** 本地扫描支持的音频扩展名（小写）。v1.4.58：+dts。 */
     private val AUDIO_EXTENSIONS =
-        listOf(".mp3", ".flac", ".m4a", ".aac", ".ogg", ".wav", ".ape", ".wma")
+        listOf(".mp3", ".flac", ".m4a", ".aac", ".ogg", ".wav", ".ape", ".wma", ".dts")
 
     /**
      * 重命名本地歌曲文件，返回新的完整文件名（含扩展名）；失败返回 null。
@@ -729,20 +873,61 @@ object DownloadManager {
      * v1.4.0：10+ update 失败（文件被播放器/其他进程占用等）时降级为
      * "复制重建"——新建目标条目、拷贝数据、删除旧条目。文件内容级操作
      * 不受 MediaStore 行级写锁影响，绝大多数占用场景都能成功。
+     *
+     * v1.4.58 第六轮：在线下载记录（source != local）也支持改名——
+     * 文件名由元数据派生（下载时按「歌手 - 歌名.ext」落盘 D_Music），
+     * 按同样规则定位后改名。
      */
     fun renameLocalFile(context: Context, song: Song, newBaseName: String): String? {
-        val oldFileName = when {
-            song.source == "local" && song.id.startsWith("local:") ->
-                song.id.removePrefix("local:")
-            else -> return null // 在线下载记录：文件名由元数据派生，不支持改名
+        // v1.4.58 第六轮：在线下载记录（id 是 API 数字 id）——按元数据
+        // 派生文件名定位（与 queryLocalUris / findLocalPlayableUri 同规则）；
+        // 混合记录（在线歌已改名过，id 变成 local:xxx）直接走 id 解析
+        val oldRef: String
+        val isOnlineRecord = song.source != "local" && !song.id.startsWith("local:")
+        if (isOnlineRecord) {
+            // 在线下载只有 mp3 / flac 两种落盘格式（DownloadTask.fileName），
+            // id 是纯数字不含扩展名——两个候选都试，找到哪个用哪个
+            // （复用 queryByDisplayName 全库精确查，与播放定位同规则；
+            // 文件名与落盘时同样做 safe() 非法字符替换）
+            val safe = fun(name: String) = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            val base = safe("${song.artistName} - ${song.displayName}")
+            oldRef = listOf("mp3", "flac")
+                .firstOrNull { e ->
+                    queryByDisplayName(context.applicationContext, "$base.$e") != null
+                }
+                ?.let { "$base.$it" }
+                ?: return null // 两种扩展名都找不到：文件不存在
+        } else {
+            oldRef = song.id.removePrefix("local:")
         }
+        val oldFileName = oldRef.substringAfterLast('/')
+        val dirRel = oldRef.substringBeforeLast('/', "")
         val ext = oldFileName.substringAfterLast('.', "mp3")
         val safe = newBaseName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
         if (safe.isEmpty()) return null
         val newFileName = "$safe.$ext"
-        if (newFileName == oldFileName) return newFileName
+        if (newFileName == oldFileName) {
+            return if (dirRel.isBlank()) newFileName else "$dirRel/$newFileName"
+        }
 
         val ctx = context.applicationContext
+
+        // v1.4.58：id 含相对路径（文件夹浏览生成）——有所有文件访问权限时
+        // 直接文件系统 renameTo（.dts 等媒体库不收录的格式唯一可行路径）
+        if (dirRel.isNotBlank() && hasAllFilesAccess()) {
+            val external = Environment.getExternalStorageDirectory() ?: return null
+            val dir = File(external, dirRel)
+            if (dir.isDirectory) {
+                val ok = runCatching {
+                    File(dir, oldFileName).renameTo(File(dir, newFileName))
+                }.getOrDefault(false)
+                if (ok) {
+                    return if (dirRel.isBlank()) newFileName else "$dirRel/$newFileName"
+                }
+                // renameTo 失败（文件被占用等）→ 继续走 MediaStore 路径
+            }
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             // v1.4.2：导入歌曲不限 D_Music，全库按文件名精确查；
             // 同时取原 RELATIVE_PATH 供复制重建时沿用目录
@@ -776,10 +961,19 @@ object DownloadManager {
                     null, null
                 )
             }.getOrDefault(0)
-            if (updated > 0) return newFileName
+            // v1.4.58：返回值统一含路径前缀（id 含路径时），保持定位信息
+            if (updated > 0) {
+                return if (dirRel.isBlank()) newFileName else "$dirRel/$newFileName"
+            }
 
             // 2) 降级：复制重建（insert 新条目 + 拷贝数据 + 删旧条目）
-            return runCatching { renameViaCopy(ctx, uri, newFileName, oldRelativePath) }.getOrNull()
+            val copied = runCatching {
+                renameViaCopy(ctx, uri, newFileName, oldRelativePath)
+            }.getOrNull()
+            if (copied != null) {
+                return if (dirRel.isBlank()) copied else "$dirRel/$copied"
+            }
+            return null
         } else {
             val dir = File(ctx.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "D_Music")
             val ok = File(dir, oldFileName).renameTo(File(dir, newFileName))
@@ -815,6 +1009,20 @@ object DownloadManager {
         // 失败：判断是"需要授权"还是"文件不存在"
         val ctx = context.applicationContext
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // v1.4.58：含路径 id 且有所有文件访问权限时，文件系统里找得到
+            // 就算"存在"（.dts 等媒体库不收录格式 MediaStore 必查空，
+            // 不能误报 NOT_FOUND）。
+            // v1.4.58 第六轮：id 有 local: 前缀即可（含混合记录）
+            if (song.id.startsWith("local:") &&
+                song.id.removePrefix("local:").contains('/') && hasAllFilesAccess()
+            ) {
+                val external = Environment.getExternalStorageDirectory()
+                val f = external?.let { File(it, song.id.removePrefix("local:")) }
+                if (f != null && f.exists()) {
+                    // 文件存在但 renameTo 失败 → 需要授权（或被占用）
+                    return RenameResult.NEEDS_AUTH to null
+                }
+            }
             val uris = queryLocalUris(ctx, song)
             if (uris.isEmpty()) return RenameResult.NOT_FOUND to null
             // 文件存在但改不动 → 大概率是 Scoped Storage 写权限
@@ -835,7 +1043,12 @@ object DownloadManager {
             put(
                 MediaStore.Audio.Media.MIME_TYPE,
                 // v1.4.28：ignoreCase——.FLAC 同样是 flac
-                if (newFileName.endsWith(".flac", true)) "audio/flac" else "audio/mpeg"
+                when {
+                    newFileName.endsWith(".flac", true) -> "audio/flac"
+                    // v1.4.58：dts 专用 MIME
+                    newFileName.endsWith(".dts", true) -> "audio/dts"
+                    else -> "audio/mpeg"
+                }
             )
             // v1.4.2：沿用原条目所在目录（导入歌曲可能不在 D_Music），
             // 查不到原路径时才落到 D_Music
@@ -930,18 +1143,13 @@ object DownloadManager {
                     // 下载完成：拉封面/歌词并嵌入文件（失败不影响下载结果）
                     runCatching { embedTags(context, sink, safeName, task) }
 
-                    val savedPath = sink.savedPath
-                    updateTask { list ->
-                        list.map {
-                            if (it.id == id) it.copy(
-                                status = DownloadStatus.DONE,
-                                progress = 1f,
-                                filePath = savedPath
-                            ) else it
-                        }
-                    }
                     // 下载完成：记入本地歌曲列表（Store 负责去重与持久化）
                     Store.addDownload(task.song)
+                    // v1.4.58：DONE 任务从内存列表移除——下载管理页「已完成」
+                    // 数据源改为 Store.downloads（持久化、跨重启保留），
+                    // 删除/重命名文件后记录同步消失
+                    batchDoneCount++
+                    updateTask { list -> list.filterNot { it.id == id } }
                     refreshDownloadNotification()
                 } finally {
                     // v1.4.23：取消/失败时清理半成品文件（IS_PENDING 的 MediaStore 条目

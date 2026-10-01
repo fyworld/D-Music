@@ -11,8 +11,27 @@ android {
         applicationId = "com.solara.music"
         minSdk = 24
         targetSdk = 34
-        versionCode = 71
-        versionName = "1.4.57"
+        versionCode = 73
+        versionName = "1.5.0"
+        // v1.5.0：本地歌曲文件夹化 + DTS 播放 + 下载管理页 + 分享 +
+        // 声道平衡 + 缓存补全 + 通知封面缓存（r1-r22 迭代）
+        // FFmpeg DTS 软解模块——只编 arm64-v8a
+        // （现代手机全 arm64；armeabi-v7a 老设备已极少，省一半编译时间）
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+        externalNativeBuild {
+            cmake {
+                arguments += "-DANDROID_STL=none"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     // v1.4.18：双版本——full（标准版，含打赏）/ lite（纯净版，无打赏）。

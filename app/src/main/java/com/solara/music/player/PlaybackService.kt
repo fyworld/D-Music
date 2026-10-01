@@ -74,7 +74,22 @@ class PlaybackService : MediaSessionService() {
         // v1.4.25：播放缓存——在线歌曲边播边落盘，重听秒开零流量
         PlaybackCache.init(this)
 
-        val playerBuilder = ExoPlayer.Builder(this)
+        // v1.4.58 第八轮：FFmpeg DTS 软解——DefaultRenderersFactory 的
+        // EXTENSION_RENDERER_MODE_ON：MediaCodec 不支持的格式（DTS）自动
+        // 回落到 FfmpegAudioRenderer 软解（CPU 解码成 PCM），有硬解的
+        // 格式仍优先走 MediaCodec（零性能损失）。海贝播放器同原理。
+        // v1.4.59：换 ChannelBalanceRenderersFactory（子类）——注入
+        // ChannelMixingAudioProcessor 实现左右声道平衡（设置页滑杆实时调节，
+        // 仅 App 内生效）。EXTENSION_RENDERER_MODE_ON 等父类配置全部保留。
+        // 注意：setExtensionRendererMode 返回父类类型（Builder 链），后续
+        // applyBalance 调用需持有子类引用——分开两步写。
+        @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+        val balanceFactory = ChannelBalanceRenderersFactory(this)
+        balanceFactory.setExtensionRendererMode(
+            androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+        )
+        val renderersFactory = balanceFactory
+        val playerBuilder = ExoPlayer.Builder(this, renderersFactory)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -116,20 +131,42 @@ class PlaybackService : MediaSessionService() {
             }
             playerBuilder
                 .setMediaSourceFactory(
-                    androidx.media3.exoplayer.source.DefaultMediaSourceFactory(routingFactory)
+                    androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
+                        routingFactory, DtsExtractorFactory()
+                    )
                 )
                 .build()
         } else {
-            playerBuilder.build()
+            playerBuilder
+                .setMediaSourceFactory(
+                    androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
+                        androidx.media3.datasource.DefaultDataSource.Factory(this),
+                        DtsExtractorFactory()
+                    )
+                )
+                .build()
         }
 
         // 把 player 注入给全局控制器，状态流与队列恢复都会在这里触发
         // （PlayerManager 持有原始 ExoPlayer，播放逻辑零改动）
         PlayerManager.attachPlayer(player, this)
 
+        // v1.4.59：左右声道平衡实时应用——设置页滑杆变化即重配混合矩阵。
+        // ChannelMixingAudioProcessor 在播放中热更新矩阵（下一缓冲生效，
+        // 无需重建播放器/重新装载曲目）。初始值已在工厂构造时应用。
+        scope.launch {
+            Store.settings.collect { s ->
+                balanceFactory.applyBalance(s.channelBalance)
+            }
+        }
+
         // v1.4.24：MediaSession 挂切歌转发包装器——蓝牙耳机/系统媒体面板
         // 的上一首/下一首命令才能到达应用层队列（详见 QueueForwardingPlayer）
+        // v1.4.59 r20：挂自研 CachedBitmapLoader——通知封面带磁盘位图缓存，
+        // 断网播放缓存歌曲时通知栏也能显示封面（默认 BitmapLoader 每次现
+        // 下载，断网即占位）
         mediaSession = MediaSession.Builder(this, QueueForwardingPlayer(player))
+            .setBitmapLoader(CachedBitmapLoader(this))
             .setCallback(object : MediaSession.Callback {
                 override fun onConnect(
                     session: MediaSession,

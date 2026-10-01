@@ -74,6 +74,8 @@ fun ExploreScreen(
     val toast by vm.toast.collectAsState()
     val bgCover by vm.bgCover.collectAsState()
     val favorites by Store.favorites.collectAsState()
+    // v1.4.59：当前播放歌曲——列表行显示播放中标记
+    val currentSong by PlayerManager.currentSong.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
 
     // v1.4.13 #63：批量存歌单 / 批量下载
@@ -213,6 +215,7 @@ fun ExploreScreen(
                         SongRow(
                             song = song,
                             isFavorite = favorites.any { it.sameAs(song) },
+                            isCurrent = currentSong?.sameAs(song) == true,
                             onClick = {
                                 // v1.4.50：点击歌时卡片背景同步换成这首歌的封面
                                 vm.setBgFromSong(song)

@@ -49,8 +49,10 @@ object LyricRepository {
 
     /** 在线获取：在线歌曲直接查 API；本地歌曲先搜索匹配再查词。 */
     private suspend fun fetchOnline(context: Context, song: Song): String? {
-        // 在线歌曲：直接按 lyricId/id 查词
-        if (!LocalCoverExtractor.isLocalSong(song)) {
+        // 在线歌曲：直接按 lyricId/id 查词。
+        // v1.4.58 第六轮：混合记录（在线下载歌改名后 id=local:xxx）的
+        // lyricId 仍是有效 API id，同样直查（比搜索匹配准）
+        if (!LocalCoverExtractor.isLocalSong(song) || song.source != "local") {
             return runCatching { MusicApi.fetchLyric(song) }.getOrNull()
         }
         // 本地歌曲：自动精确匹配后查词

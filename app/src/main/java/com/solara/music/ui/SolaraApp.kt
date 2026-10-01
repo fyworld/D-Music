@@ -335,7 +335,9 @@ fun SolaraApp() {
                     MePage.SETTINGS.name -> SettingsScreen()
                     MePage.DOWNLOADS.name -> DownloadScreen(
                         onBack = { mePage = null },
-                        onAddToPlaylist = { playlistTarget = it }
+                        onAddToPlaylist = { playlistTarget = it },
+                        onShowMessage = showMessage,
+                        onLyricUpdated = { playerVm.notifyLyricUpdated() }
                     )
                     MePage.LOCAL_SONGS.name -> LocalSongsScreen(
                         onBack = { mePage = null },

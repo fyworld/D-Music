@@ -94,6 +94,8 @@ object PlayerManager {
     }.stateIn(scope, SharingStarted.Eagerly, null)
 
     private var pendingJob: Job? = null
+    /** v1.4.59 r19：后台缓存补全任务（当前曲目装载成功后启动，换曲取消）。 */
+    private var backfillJob: Job? = null
     private var consecutiveFailures = 0
     private var attached = false
 
@@ -119,6 +121,13 @@ object PlayerManager {
      * 不浪费跳歌）。每首歌最多一次，resolveAndPlay 装载时重置。
      */
     @Volatile private var playerErrorRetryDone = false
+
+    /**
+     * v1.4.59 r22：最近一次装载的曲目 key（source:id）。
+     * 用于 resolveAndPlay 判断"曲目是否真的变了"——只有换曲才重置
+     * playerErrorRetryDone（同曲重装载保留重试标志，防错误重试无限循环）。
+     */
+    @Volatile private var lastLoadedKey: String? = null
 
     /**
      * v1.4.30：连续失败停止播放时的回调——PlaybackService 侧用来重建
@@ -157,6 +166,53 @@ object PlayerManager {
      * 切换与错误回调存在时间差，"错误发生时 App 在后台"是更稳的信号。
      */
     @Volatile var appInForeground = false
+
+    /**
+     * v1.4.58 第十一轮：打点模式抑制自动切歌。
+     *
+     * 歌词逐句打点进行中（PlayerScreen tappingMode=true）时歌曲自然播完
+     * 不自动切下一首——切歌会丢弃未落盘的打点数据（tappingMap 是 UI 状态，
+     * LaunchedEffect(song) 切歌即清），用户只能从头重打。置此标志后
+     * onEnded 停在当前曲目（STATE_ENDED），等用户「完成」落盘或
+     * 「保存校准歌词」固化；手动切歌/点播放不受影响。
+     *
+     * v1.4.58 第十二轮：holdAutoAdvance 只应作用于"打点的那首歌"。
+     * resolveAndPlay 按 holdKey（source:id）判断曲目是否真的变了：
+     * 同曲重播（打点中点播放键重听）保留抑制；换曲装载（手动切歌/
+     * 后台通知栏切歌，UI 不在场）即解除——否则抑制残留导致新歌播完
+     * 永远停在原地不切歌。
+     */
+    @Volatile var holdAutoAdvance = false
+
+    /** v1.4.58 第十二轮：holdAutoAdvance 生效中的曲目 key（source:id）。 */
+    @Volatile private var holdKey: String? = null
+
+    /** v1.4.58 第十二轮：进入打点模式时由 UI 调用（记录生效曲目）。 */
+    fun holdAutoAdvanceFor(song: Song) {
+        holdKey = "${song.source}:${song.id}"
+        holdAutoAdvance = true
+    }
+
+    /** v1.4.58 第十二轮：退出打点/保存后由 UI 调用（解除抑制）。 */
+    fun releaseAutoAdvance() {
+        holdKey = null
+        holdAutoAdvance = false
+    }
+
+    /**
+     * v1.4.58 第五轮：当前曲目是否"零轨道被选中"（设备无解码器）。
+     *
+     * 背景：ExoPlayer 对无渲染器支持的轨道不报错——轨道选择失败后
+     * 所有渲染器禁用，renderersEnded 恒 true + 时长未知（Unseekable
+     * SeekMap）时 doSomeWork 直接 setState(STATE_ENDED)，静默秒结束。
+     * onEnded 自动切歌 → 重新装载 → 再秒结束 → 无限循环且无提示
+     * （DTS 在无解码器设备上的实测症状："点击后歌曲一直循环"）。
+     *
+     * 修复：onTracksChanged 检测"有轨道组但零选中"置此标志；
+     * onEnded 见标志即停（不自动切歌）+ 提示一次；resolveAndPlay
+     * 装载新曲目时重置。
+     */
+    @Volatile private var noTrackSelected = false
 
     /** v1.4.35：UI 消费中断标志（读取并清零）。 */
     fun consumeScreenOffInterrupted(): Boolean {
@@ -238,8 +294,21 @@ object PlayerManager {
                     // 放在 playAt 的 IDLE 分支，自动跳歌链上每次 playAt 都
                     // 清零，"3 连败停止"从未真正生效（API 故障时无限滚队列）。
                     consecutiveFailures = 0
+                    // v1.4.59 r22：READY = 曲目真正能播（解码器配置成功），
+                    // 此后若再报错（如播放中直链过期）允许再重试一次。
+                    // 注意：READY 前的持续解码失败不会走到这里，重试标志
+                    // 由 resolveAndPlay 的 lastLoadedKey 判断保留。
                     playerErrorRetryDone = false
                 }
+            }
+
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                // v1.4.58 第五轮：零轨道选中检测（设备无解码器的静默失败）。
+                // 有轨道组但没有任何选中 = 渲染器全部无法支持（如 DTS），
+                // ExoPlayer 不报错、静默 STATE_ENDED——置标志供 onEnded 阻断
+                // 自动切歌循环并给出明确提示。
+                noTrackSelected = !tracks.isEmpty() &&
+                    tracks.groups.none { it.isSelected() }
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -348,6 +417,8 @@ object PlayerManager {
      */
     fun detachPlayer() {
         pendingJob?.cancel()
+        backfillJob?.cancel()
+        backfillJob = null
         attached = false
         playerRef = null
         appContext = null
@@ -358,6 +429,9 @@ object PlayerManager {
         urlCacheBr = null
         urlCacheRetryDone = false
         playerErrorRetryDone = false
+        noTrackSelected = false
+        holdAutoAdvance = false
+        holdKey = null
         onPlaybackHalted = null
         // v1.4.36：服务销毁（用户退出 App）时播放意图一并终止
         userWantsPlayback = false
@@ -466,7 +540,14 @@ object PlayerManager {
         }
     }
 
-    fun removeAt(index: Int) {
+    /**
+     * v1.4.58 第六轮：autoplayNext——删除的是当前播放曲目时的行为开关。
+     * true（默认，播放页队列管理等场景）：自动播下一首；
+     * false（删除文件场景）：什么都不做——停在顶上来的曲目上但不装载，
+     * 播放器保持空载，用户点播放键走 togglePlayPause 的
+     * mediaItemCount==0 自愈分支重新装载。
+     */
+    fun removeAt(index: Int, autoplayNext: Boolean = true) {
         val songs = queue.value.toMutableList()
         if (index !in songs.indices) return
         songs.removeAt(index)
@@ -481,8 +562,16 @@ object PlayerManager {
             index == cur -> {
                 if (songs.isEmpty()) {
                     stopPlayback(songs)
-                } else {
+                } else if (autoplayNext) {
                     playAt(cur.coerceIn(0, songs.size - 1))
+                } else {
+                    // 删除文件场景的静默移除：不自动播下一首。
+                    // 删除前调用方已 stopIfPlaying 清空播放器，此处只需
+                    // 校正索引并落盘（播放器空载，点播放自愈重载）
+                    currentIndex.value = cur.coerceIn(0, songs.size - 1)
+                    isPlaying.value = false
+                    userWantsPlayback = false
+                    Store.saveQueue(songs, currentIndex.value)
                 }
             }
 
@@ -589,6 +678,29 @@ object PlayerManager {
     }
 
     private fun onEnded() {
+        // v1.4.58 第五轮：零轨道选中（设备无解码器）的静默秒结束——
+        // 不自动切歌（否则无限循环），提示一次后停在当前曲目。
+        // 用户手动切歌/点播放会走 resolveAndPlay 重置标志，不受影响。
+        if (noTrackSelected) {
+            isPlaying.value = false
+            userWantsPlayback = false
+            playError.tryEmit(
+                "「${songs().getOrNull(currentIndex.value)?.displayName ?: "当前歌曲"}」" +
+                    "无法播放：设备不支持该音频格式的解码"
+            )
+            return
+        }
+        // v1.4.58 第十一轮：打点模式抑制自动切歌——歌曲自然播完停在
+        // 当前曲目（STATE_ENDED），保住未落盘的打点数据等用户保存。
+        // isPlaying 置 false 让 UI 恢复播放按钮；userWantsPlayback 置
+        // false 避免熄屏中断误报（打点时用户在屏幕上操作，不会熄屏，
+        // 但保持语义干净）。手动切歌/点播放不受影响（togglePlayPause
+        // 的 STATE_ENDED 分支会重新装载当前曲目）。
+        if (holdAutoAdvance) {
+            isPlaying.value = false
+            userWantsPlayback = false
+            return
+        }
         if (playMode.value == PlayMode.REPEAT_ONE) {
             playerRef?.seekTo(0)
             playerRef?.play()
@@ -600,8 +712,22 @@ object PlayerManager {
     private fun resolveAndPlay(song: Song) {
         val p = playerRef ?: return
         pendingJob?.cancel()
+        // v1.4.58 第十二轮：装载曲目变了（source:id 不同）即解除自动切歌
+        // 抑制——holdAutoAdvance 只应作用于打点的那首歌；同曲重播（打点中
+        // 点播放键重听继续打点）保留抑制。UI 在场时 LaunchedEffect(song)
+        // 也会清；这里覆盖 UI 不在场的场景（后台/通知栏切歌）。
+        if (holdKey != null && holdKey != "${song.source}:${song.id}") {
+            holdKey = null
+            holdAutoAdvance = false
+        }
+        // v1.4.58 第五轮：装载新曲目重置零轨道选中标志（onTracksChanged
+        // 会按新曲目的实际选择结果重新赋值）
+        noTrackSelected = false
         pendingJob = scope.launch {
-            val isLocalImport = song.source == "local" && song.id.startsWith("local:")
+            // v1.4.58 第六轮：id 有 local: 前缀即本地文件定位记录
+            // （本地导入歌 + 在线下载歌改名后的混合记录）——
+            // 聚合接口没有这个 id，在线解析注定失败且白等 20 秒，直接跳过
+            val isLocalImport = song.id.startsWith("local:")
             // 本地已下载：优先播本地文件（离线可用），否则解析在线直链
             val localUri = withContext(Dispatchers.IO) {
                 appContext?.let { DownloadManager.findLocalPlayableUri(it, song) }
@@ -692,8 +818,35 @@ object PlayerManager {
                 p.setMediaItem(item)
                 p.prepare()
                 p.playWhenReady = true
-                // v1.4.30：装载成功重置播放器错误重试标记（READY 回调双保险）
-                playerErrorRetryDone = false
+                // v1.4.59 r22：重置播放器错误重试标记——只在曲目真正变化时。
+                // 原实现 prepare() 后无条件清零：持续性错误（如 DTS 5.1 进
+                // 声道混合处理器抛 UnhandledAudioFormatException）每次重试
+                // 都先清标志 → onPlayerError 永远走"首次错误"分支 →
+                // playAt → resolveAndPlay → 又清 → 无限「正在重试」循环。
+                // READY 回调（onPlaybackStateChanged）的重置保留——曲目
+                // 真正装载成功（能播）才允许下次错误再重试一次。
+                val loadedKey = "${song.source}:${song.id}"
+                if (lastLoadedKey != loadedKey) {
+                    playerErrorRetryDone = false
+                    lastLoadedKey = loadedKey
+                }
+
+                // v1.4.59 r19：后台补全缓存——边播边缓存只写预读窗口内的
+                // 数据，听一半切走的歌缓存不完整，断网兜底（要求全量缓存）
+                // 用不上。装载成功后把缺口在后台补到 100%，"听过的歌"
+                // 断网也能完整重播。只对在线直链播放的歌补（本地文件/
+                // 直链兜底播放不补——后者本来就是离线场景）；同一首歌
+                // 同时只跑一个补全任务；补全失败静默（下次播放再试）。
+                if (!usedCachedUrl && onlineUrl != null) {
+                    backfillJob?.cancel()
+                    val bfKey = pbKey
+                    val bfUrl = onlineUrl
+                    backfillJob = scope.launch(Dispatchers.IO) {
+                        runCatching {
+                            PlaybackCache.backfill(appContext ?: return@launch, bfKey, bfUrl)
+                        }
+                    }
+                }
             }
         }
     }

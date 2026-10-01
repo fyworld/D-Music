@@ -53,6 +53,8 @@ fun FavoritesScreen(
     onShowMessage: (String) -> Unit = {}
 ) {
     val favorites by Store.favorites.collectAsState()
+    // v1.4.59：当前播放歌曲——列表行显示播放中标记
+    val currentSong by PlayerManager.currentSong.collectAsState()
     val listState = rememberLazyListState()
     val select = rememberMultiSelectState()
     var showBatchPlaylist by remember { mutableStateOf(false) }
@@ -161,6 +163,7 @@ fun FavoritesScreen(
                     SongRow(
                         song = song,
                         isFavorite = true,
+                        isCurrent = currentSong?.sameAs(song) == true,
                         onClick = { PlayerManager.setQueue(favorites, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },

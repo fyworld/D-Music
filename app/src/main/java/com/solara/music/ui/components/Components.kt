@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
@@ -276,6 +277,8 @@ internal object CoverCache {
  * 更多弹菜单：加入歌单、下载、移除（移除行为由所在列表定义）。
  * v1.4.26：selectionMode=true 时切换为多选行——点击整行切换勾选，
  * 左侧封面位置显示勾选框，隐藏收藏/更多按钮。
+ * v1.4.59：isCurrent=true 时歌名前显示播放中标记（GraphicEq 图标+主色，
+ * 与播放页队列样式一致），歌名/歌手文字转主色。
  */
 @Composable
 fun SongRow(
@@ -291,6 +294,7 @@ fun SongRow(
     selectionMode: Boolean = false,
     selected: Boolean = false,
     onSelect: (() -> Unit)? = null,
+    isCurrent: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -320,6 +324,17 @@ fun SongRow(
         } else {
             CoverImage(song = song, size = 52.dp, corner = 12.dp)
         }
+        // v1.4.59：播放中标记（非多选模式且是当前播放歌曲时显示）
+        if (!selectionMode && isCurrent) {
+            Icon(
+                imageVector = Icons.Filled.GraphicEq,
+                contentDescription = "正在播放",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .padding(start = 8.dp)
+                    .size(18.dp)
+            )
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -328,15 +343,19 @@ fun SongRow(
             Text(
                 text = song.displayName,
                 style = MaterialTheme.typography.bodyLarge,
-                color = if (selectionMode && selected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurface,
+                color = when {
+                    selectionMode && selected -> MaterialTheme.colorScheme.primary
+                    isCurrent -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = song.artistName,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (isCurrent) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 2.dp)

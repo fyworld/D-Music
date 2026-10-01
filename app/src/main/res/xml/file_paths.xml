@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- v1.4.19：应用内更新 APK 安装用的 FileProvider 路径声明
-     （getExternalFilesDir 对应 external-files-path） -->
+     （getExternalFilesDir 对应 external-files-path）
+     v1.4.59：root-path 覆盖外部存储根——播放页「分享」本地歌曲文件
+     （公共 Music/D_Music 下载 + 任意浏览目录导入的文件）转 content URI -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <external-files-path
         name="update_apks"
@@ -8,4 +10,7 @@
     <files-path
         name="internal_updates"
         path="updates/" />
+    <root-path
+        name="external_root"
+        path="/storage/emulated/0/" />
 </paths>

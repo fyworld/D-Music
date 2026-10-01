@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
@@ -69,8 +70,16 @@ fun PlaylistsScreen(
     val playlists by Store.playlists.collectAsState()
     var openPlaylistId by remember { mutableStateOf<String?>(null) }
     var showCreate by remember { mutableStateOf(false) }
+    // v1.4.59：当前播放歌曲——歌单卡片显示播放中标记（当前歌属于该歌单）
+    val currentSong by PlayerManager.currentSong.collectAsState()
 
     val open = playlists.firstOrNull { it.id == openPlaylistId }
+    // v1.4.58：详情页打开时拦截系统返回键 = 返回歌单列表
+    // （此前无拦截，返回键直接穿透到 SolaraApp 顶层——主界面状态下
+    // 直接把 App 退到后台，用户预期是先回歌单列表）
+    androidx.activity.compose.BackHandler(enabled = open != null) {
+        openPlaylistId = null
+    }
     if (open != null) {
         PlaylistDetailScreen(
             playlist = open,
@@ -115,6 +124,9 @@ fun PlaylistsScreen(
                 items(playlists.size) { i ->
                     PlaylistCard(
                         playlist = playlists[i],
+                        isPlaying = currentSong?.let { cur ->
+                            playlists[i].songs.any { it.sameAs(cur) }
+                        } == true,
                         onClick = { openPlaylistId = playlists[i].id }
                     )
                 }
@@ -138,7 +150,7 @@ fun PlaylistsScreen(
 }
 
 @Composable
-private fun PlaylistCard(playlist: Playlist, onClick: () -> Unit) {
+private fun PlaylistCard(playlist: Playlist, isPlaying: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -158,7 +170,8 @@ private fun PlaylistCard(playlist: Playlist, onClick: () -> Unit) {
             Icon(
                 Icons.Filled.LibraryMusic,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                tint = if (isPlaying) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onPrimaryContainer
             )
         }
         // v1.4.26：歌曲数量放歌单名称后面（同一行）
@@ -168,10 +181,22 @@ private fun PlaylistCard(playlist: Playlist, onClick: () -> Unit) {
                 .padding(horizontal = 12.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // v1.4.59：歌单内有歌正在播放——歌单名前显示播放中标记
+                if (isPlaying) {
+                    Icon(
+                        Icons.Filled.GraphicEq,
+                        contentDescription = "正在播放",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .size(18.dp)
+                    )
+                }
                 Text(
                     text = playlist.name,
                     style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = if (isPlaying) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -199,6 +224,8 @@ private fun PlaylistDetailScreen(
     onBack: () -> Unit
 ) {
     val favorites by Store.favorites.collectAsState()
+    // v1.4.59：当前播放歌曲——列表行显示播放中标记
+    val currentSong by PlayerManager.currentSong.collectAsState()
     val listState = rememberLazyListState()
     var showRename by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -334,6 +361,7 @@ private fun PlaylistDetailScreen(
                     SongRow(
                         song = song,
                         isFavorite = favorites.any { it.sameAs(song) },
+                        isCurrent = currentSong?.sameAs(song) == true,
                         onClick = { PlayerManager.setQueue(playlist.songs, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },

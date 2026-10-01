@@ -61,6 +61,8 @@ fun RecentScreen(
 ) {
     val recent by Store.recent.collectAsState()
     val favorites by Store.favorites.collectAsState()
+    // v1.4.59：当前播放歌曲——列表行显示播放中标记
+    val currentSong by PlayerManager.currentSong.collectAsState()
     var showClearConfirm by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     // v1.4.26：多选批量
@@ -176,6 +178,7 @@ fun RecentScreen(
                     SongRow(
                         song = song,
                         isFavorite = favorites.any { it.sameAs(song) },
+                        isCurrent = currentSong?.sameAs(song) == true,
                         onClick = { PlayerManager.setQueue(recent, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },

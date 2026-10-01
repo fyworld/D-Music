@@ -15,6 +15,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -52,7 +54,14 @@ import com.solara.music.data.DownloadTask
 import com.solara.music.data.Qualities
 import com.solara.music.data.Song
 import com.solara.music.data.Store
+import com.solara.music.player.PlayerManager
+import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.CoverImage
+import com.solara.music.ui.components.EmptyState
+import com.solara.music.ui.components.LocalFileOpsHandler
+import com.solara.music.ui.components.SelectionTopBar
+import com.solara.music.ui.components.SongRow
+import com.solara.music.ui.components.rememberMultiSelectState
 
 /**
  * 品质选择弹窗：挑 128K/192K/320K/FLAC 后开始下载。
@@ -112,16 +121,46 @@ fun QualityPickerDialog(
 }
 
 /**
- * 下载管理页：任务列表 + 进度。
+ * 下载管理页（v1.4.58 重构）：
+ * - 进行中/失败/等待：任务行（进度条 + 取消/移除）
+ * - 已完成：SongRow 完整操作（点击播放、加入歌单、收藏、下载歌词、
+ *   重命名、删除文件、多选批量、播放全部）——与本地歌曲页一致
+ * - 「清除已完成」改为「清除失败」：已完成任务保留在页面
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DownloadScreen(
     onBack: () -> Unit,
-    onAddToPlaylist: (Song) -> Unit = {}
+    onAddToPlaylist: (Song) -> Unit = {},
+    onShowMessage: (String) -> Unit = {},
+    onLyricUpdated: () -> Unit = {}
 ) {
     val tasks by DownloadManager.tasks.collectAsState()
     val favorites by Store.favorites.collectAsState()
+    // v1.4.59：当前播放歌曲——列表行显示播放中标记
+    val currentSong by PlayerManager.currentSong.collectAsState()
+    // v1.4.58：已完成歌曲数据源 = Store.downloads（持久化、跨重启保留；
+    // 删除/重命名文件后记录同步消失）。过滤旧版扫描导入的 local: 歌——
+    // 那些归本地歌曲页（文件夹浏览）管
+    val downloads by Store.downloads.collectAsState()
+    val doneSongs = downloads.filterNot { it.source == "local" }
+    val activeTasks = tasks
+
+    // 多选批量（对已完成歌曲）
+    val select = rememberMultiSelectState()
+    var showBatchPlaylist by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    // 文件操作（删除/重命名）走公共授权链路组件
+    var deleteTarget by remember { mutableStateOf<Song?>(null) }
+    var renameTarget by remember { mutableStateOf<Song?>(null) }
+    var opsMessage by remember { mutableStateOf<String?>(null) }
+    // 单曲下载歌词
+    var lyricTarget by remember { mutableStateOf<Song?>(null) }
+
+    // 多选模式下返回键 = 退出多选
+    androidx.activity.compose.BackHandler(enabled = select.active) {
+        select.exit()
+    }
 
     Column(
         modifier = Modifier
@@ -129,25 +168,98 @@ fun DownloadScreen(
             .padding(horizontal = 16.dp)
     ) {
         Spacer(Modifier.height(12.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Filled.Close, contentDescription = "关闭")
-            }
-            Text(
-                text = "下载管理",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.weight(1f)
+        if (select.active) {
+            SelectionTopBar(
+                selectedCount = select.selected.size,
+                totalCount = doneSongs.size,
+                onExit = { select.exit() },
+                onToggleSelectAll = {
+                    if (select.selected.size >= doneSongs.size) select.clearSelection()
+                    else select.selectAll(doneSongs)
+                },
+                onFavorite = {
+                    val added = Store.addFavorites(select.selectedSongs(doneSongs))
+                    onShowMessage("已收藏 $added 首（重复自动跳过）")
+                },
+                onAddToPlaylist = {
+                    if (select.selected.isNotEmpty()) showBatchPlaylist = true
+                }
             )
-            if (tasks.any { it.status != DownloadStatus.DOWNLOADING }) {
-                TextButton(onClick = { DownloadManager.clearFinished() }) { Text("清除已完成") }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Filled.Close, contentDescription = "关闭")
+                }
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "下载管理",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        if (doneSongs.isNotEmpty()) {
+                            Text(
+                                text = "（${doneSongs.size} 首）",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
+                    }
+                    if (activeTasks.isNotEmpty()) {
+                        Text(
+                            text = "进行中 ${activeTasks.count { it.status == DownloadStatus.DOWNLOADING }} / ${activeTasks.size}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Box(modifier = Modifier.padding(end = 12.dp)) {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "更多")
+                    }
+                    DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("多选") },
+                            leadingIcon = { Icon(Icons.Filled.Checklist, contentDescription = null) },
+                            enabled = doneSongs.isNotEmpty(),
+                            onClick = {
+                                menuOpen = false
+                                select.enter()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("播放全部") },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null) },
+                            enabled = doneSongs.isNotEmpty(),
+                            onClick = {
+                                menuOpen = false
+                                PlayerManager.setQueue(doneSongs, 0)
+                            }
+                        )
+                        // v1.4.58：只清失败任务（已完成保留）
+                        DropdownMenuItem(
+                            text = { Text("清除失败任务") },
+                            leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                            enabled = tasks.any { it.status == DownloadStatus.FAILED },
+                            onClick = {
+                                menuOpen = false
+                                DownloadManager.clearFinished()
+                            }
+                        )
+                    }
+                }
             }
         }
 
-        if (tasks.isEmpty()) {
+        if (tasks.isEmpty() && doneSongs.isEmpty()) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
@@ -172,16 +284,83 @@ fun DownloadScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(tasks.size) { i ->
+                // 进行中/等待/失败任务（在前，最新下载优先可见）
+                items(activeTasks.size) { i ->
+                    val task = activeTasks[i]
                     DownloadRow(
-                        task = tasks[i],
-                        isFavorite = favorites.any { it.sameAs(tasks[i].song) },
-                        onAddToPlaylist = { onAddToPlaylist(tasks[i].song) }
+                        task = task,
+                        isFavorite = favorites.any { it.sameAs(task.song) },
+                        onAddToPlaylist = { onAddToPlaylist(task.song) }
+                    )
+                }
+                // 已完成歌曲：SongRow 完整操作（与本地歌曲页一致）
+                items(doneSongs.size) { i ->
+                    val song = doneSongs[i]
+                    SongRow(
+                        song = song,
+                        isFavorite = favorites.any { it.sameAs(song) },
+                        isCurrent = currentSong?.sameAs(song) == true,
+                        onClick = { PlayerManager.setQueue(doneSongs, i) },
+                        onToggleFavorite = { Store.toggleFavorite(song) },
+                        onAddToPlaylist = { onAddToPlaylist(song) },
+                        onRemove = { deleteTarget = song },
+                        onRename = { renameTarget = song },
+                        onDownloadLyric = { lyricTarget = song },
+                        selectionMode = select.active,
+                        selected = select.isSelected(song),
+                        onSelect = { select.toggle(song) }
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }
             }
         }
+    }
+
+    // 文件操作公共链路（删除/重命名 + Scoped Storage 授权）
+    LocalFileOpsHandler(
+        deleteTarget = deleteTarget,
+        onDeleteTargetChange = { deleteTarget = it },
+        renameTarget = renameTarget,
+        onRenameTargetChange = { renameTarget = it },
+        onDone = { message ->
+            opsMessage = message
+        }
+    )
+
+    opsMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { opsMessage = null },
+            title = { Text("提示") },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = { opsMessage = null }) { Text("知道了") }
+            }
+        )
+    }
+
+    // 单曲「下载歌词」对话框
+    lyricTarget?.let { target ->
+        com.solara.music.ui.components.LyricDownloadDialog(
+            song = target,
+            onDismiss = { lyricTarget = null },
+            onDownloaded = { embedded ->
+                opsMessage = if (embedded) "歌词已下载并嵌入文件，其他播放器也能显示"
+                else "歌词已下载（嵌入文件失败，已存缓存）"
+                onLyricUpdated()
+            }
+        )
+    }
+
+    // 多选批量加入歌单
+    if (showBatchPlaylist) {
+        AddSongsToPlaylistSheet(
+            songs = select.selectedSongs(doneSongs),
+            onDismiss = { showBatchPlaylist = false },
+            onDone = { name ->
+                onShowMessage("已加入歌单「$name」")
+                select.exit()
+            }
+        )
     }
 }
 

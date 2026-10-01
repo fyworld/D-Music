@@ -75,6 +75,8 @@ fun SearchScreen(
     val error by vm.error.collectAsState()
     val hasMore by vm.hasMore.collectAsState()
     val favorites by Store.favorites.collectAsState()
+    // v1.4.59：当前播放歌曲——列表行显示播放中标记
+    val currentSong by PlayerManager.currentSong.collectAsState()
     val listState = rememberLazyListState()
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -238,6 +240,7 @@ fun SearchScreen(
                     SongRow(
                         song = song,
                         isFavorite = favorites.any { it.sameAs(song) },
+                        isCurrent = currentSong?.sameAs(song) == true,
                         onClick = { PlayerManager.setQueue(results, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },
