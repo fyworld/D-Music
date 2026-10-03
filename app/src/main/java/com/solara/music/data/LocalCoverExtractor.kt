@@ -4,11 +4,13 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.LruCache
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -85,6 +87,32 @@ object LocalCoverExtractor {
     }
 
     /**
+     * v1.5.1 r48：取通知栏封面 file URI——本地歌内嵌封面优先。
+     * 顺序：内嵌封面（APIC/PICTURE）→ 同名图片 → null（URL 缓存由
+     * 调用方兜底）。内嵌位图写临时文件（cache/covers/notif_<key>.img）
+     * 返回 file:// URI——通知 BitmapLoader 直读本地文件，不走网络。
+     * 临时文件复用（同歌同 key 覆盖写），封面更新后 bumpRevision
+     * 时一并清理。
+     */
+    fun notificationCoverFile(context: Context, song: Song): String? {
+        val ctx = context.applicationContext
+        val bmp = synchronized(cache) {
+            when (val cached = cache.get("${song.source}:${song.id}")) {
+                is Bitmap -> cached
+                else -> null
+            }
+        } ?: extractEmbedded(ctx, song)
+            ?: extractSiblingImage(ctx, song)
+            ?: return null
+        return runCatching {
+            val dir = File(ctx.cacheDir, "covers").apply { mkdirs() }
+            val f = File(dir, "notif_${song.source}_${song.id.hashCode()}.img")
+            FileOutputStream(f).use { out -> bmp.compress(Bitmap.CompressFormat.JPEG, 90, out) }
+            Uri.fromFile(f).toString()
+        }.getOrNull()
+    }
+
+    /**
      * 在线搜索并匹配封面（v1.4.0）：
      * 用「歌手 歌名」调聚合接口搜索，命中同名（且歌手相近）的结果则取其
      * picId 解析封面直链。返回封面 URL；未命中返回 null。
@@ -99,8 +127,12 @@ object LocalCoverExtractor {
         }.trim()
         if (query.isBlank()) return null
         val src = Store.settings.value.source.ifBlank { "netease" }
-        val results = runCatching { MusicApi.search(src, query, page = 1, count = 10) }
-            .getOrNull() ?: return null
+        // v1.5.1 r40：改走 LyricRepository.searchCandidates 统一路由——
+        // 修复聚合 tab（src="all"）与 GD 失效源（kuwo 等）时候选搜索
+        // 空列表（本地歌封面自动匹配失效）双根因。
+        val results = runCatching {
+            LyricRepository.searchCandidates(src, query, count = 10)
+        }.getOrNull() ?: return null
         // 精确匹配：歌名相等且歌手互含（本地文件名解析的歌手常不完整）
         val hit = results.firstOrNull { r ->
             r.name == song.name &&
@@ -108,7 +140,14 @@ object LocalCoverExtractor {
                     r.artistName.contains(song.artistName, ignoreCase = true) ||
                     song.artistName.contains(r.artistName, ignoreCase = true))
         } ?: return null
-        val url = runCatching { MusicApi.fetchPicUrl(hit) }.getOrNull() ?: return null
+        // v1.5.1 r40：hit 可能是 lx 源码候选（统一路由回落平台直连搜出的）——
+        // 平台直连取封面优先，失败回落 GD API（GD 模式搜出的候选仍走 GD）
+        val url = if (PlatformMediaApi.isPlatformSource(hit.source)) {
+            runCatching { PlatformMediaApi.fetchPicUrl(hit) }.getOrNull()
+                ?: runCatching { MusicApi.fetchPicUrl(hit) }.getOrNull()
+        } else {
+            runCatching { MusicApi.fetchPicUrl(hit) }.getOrNull()
+        } ?: return null
         Store.saveLocalCoverUrl(song, url)
         return url
     }

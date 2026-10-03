@@ -11,6 +11,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import com.solara.music.customsource.CustomSourceManager
 import com.solara.music.data.DownloadManager
 import com.solara.music.data.MusicApi
 import com.solara.music.data.Song
@@ -128,6 +129,13 @@ object PlayerManager {
      * playerErrorRetryDone（同曲重装载保留重试标志，防错误重试无限循环）。
      */
     @Volatile private var lastLoadedKey: String? = null
+
+    /**
+     * v1.5.1 r28：最近一次取歌链路（custom=自定义源 / api=GD音乐台 /
+     * local=本地文件 / cache=缓存直链兜底 / null=未播放）。
+     * 播放页显示小标记，用户可直观确认当前歌走的是哪条链路。
+     */
+    val resolveSource = MutableStateFlow<String?>(null)
 
     /**
      * v1.4.30：连续失败停止播放时的回调——PlaybackService 侧用来重建
@@ -299,6 +307,19 @@ object PlayerManager {
                     // 注意：READY 前的持续解码失败不会走到这里，重试标志
                     // 由 resolveAndPlay 的 lastLoadedKey 判断保留。
                     playerErrorRetryDone = false
+                    // v1.5.1 r39：已播时长落盘——GD API 搜索不返回时长
+                    // （interval 恒空），播放过的歌用 ExoPlayer duration
+                    // 兜底：最近/收藏/歌单里 GD 源歌行尾能显示时长了。
+                    // READY 时 duration 可能还是 C.TIME_UNSET（流式源
+                    // 头几秒未定）——取不到就跳过，下次 READY/重播再补。
+                    // 本地歌（MediaMetadataRetriever 页面已补）也统一存，
+                    // SongRow 优先 interval，此表只兜空值。
+                    runCatching {
+                        val dur = p.duration
+                        if (dur > 0) {
+                            currentSong.value?.let { Store.savePlayedDuration(it, dur) }
+                        }
+                    }
                 }
             }
 
@@ -736,30 +757,97 @@ object PlayerManager {
             // v1.4.28：本地导入歌（source=local）聚合接口没有这个源，
             // resolveUrl 注定失败且故障时白等 20 秒——直接跳过在线解析
             val pbKey = PlaybackCache.keyOf(song.source, song.id, quality)
-            val onlineUrl = if (localUri == null && !isLocalImport) {
-                try { MusicApi.resolveUrl(song, quality) } catch (e: Exception) { null }
+            // v1.5.1 r38：**已 100% 缓存的歌优先走缓存**——先查缓存直链，
+            // 命中则跳过全部在线解析（脚本/GD/换源都省掉，秒开零流量），
+            // 播放页显示「缓存」标记。直链过期风险：isFullyCached 保证
+            // 全区间命中，CacheDataSource 不碰上游，上游挂了也能播。
+            var usedCachedUrl = false
+            val cachedUrlFirst = if (localUri == null && !isLocalImport) {
+                Store.cachedUrl(song.source, song.id, quality)
+                    ?.takeIf { PlaybackCache.isFullyCached(pbKey) }
+            } else null
+            // v1.5.1 r26：自定义音源——优先模式先走自定义源（失败回落 GD API）；
+            // 兜底模式 GD API 失败后再试自定义源。本地导入歌不走自定义源
+            // （脚本按 songId 取各平台歌，local id 无意义）。
+            // v1.5.1 r38：缓存命中时跳过（不白跑脚本）。
+            val customSourceUrl = if (cachedUrlFirst == null && localUri == null && !isLocalImport &&
+                CustomSourceManager.isPreferred && CustomSourceManager.sandboxReady
+            ) {
+                try { resolveFromCustomSource(song, quality) } catch (e: Exception) { null }
+            } else null
+            // v1.5.1 r28：兜底模式下 GD API 失败后由自定义源解析成功的标志
+            // （用于 resolveSource 标记——区分 api/custom）
+            var fallbackCustomResolved = false
+            // v1.5.1 r37：自动换源结果（原源取歌失败后切其它源的同名歌）
+            var toggled: com.solara.music.data.MusicSourceToggler.ToggleResult? = null
+            val onlineUrl = if (cachedUrlFirst == null && localUri == null && !isLocalImport) {
+                customSourceUrl ?: run {
+                    try { MusicApi.resolveUrl(song, quality) } catch (e: Exception) { null }
+                        ?: if (!CustomSourceManager.isPreferred) {
+                            // v1.5.1 r26：兜底模式——GD API 失败后试自定义源
+                            try {
+                                resolveFromCustomSource(song, quality)?.also {
+                                    fallbackCustomResolved = true
+                                }
+                            } catch (e: Exception) { null }
+                        } else null
+                        // v1.5.1 r37：原源全链路取歌失败——自动换源（LX music
+                        // 同款）：全平台搜同名歌，逐源试取直链。QQ 源部分歌
+                        // 不能播（版权/风控）、独家音源 V6 对网易歌取歌失败的
+                        // 场景由此兜底——换到其它源的同名歌继续播。
+                        ?: run {
+                            toggled = try {
+                                com.solara.music.data.MusicSourceToggler.toggle(song, quality)
+                            } catch (e: Exception) { null }
+                            toggled?.url
+                        }
+                }
             } else {
                 null
             }
             // v1.4.29：在线解析成功顺手持久化直链；API 失败时兜底——音频已
             // 100% 缓存的歌用过期直链也能播（CacheDataSource 全命中不碰
             // 上游），GD API 故障（如 522 宕机）时缓存过的歌照样能放
-            var usedCachedUrl = false
+            // v1.5.1 r37：换源成功的直链也持久化到原歌名下（key=原歌
+            // source:id）——重播/断网兜底直接命中，不必每次重新换源
             val url = when {
                 localUri != null -> localUri
+                cachedUrlFirst != null -> cachedUrlFirst.also { usedCachedUrl = true }
                 onlineUrl != null -> onlineUrl.also {
                     Store.saveUrl(song.source, song.id, quality, it)
                 }
-                isLocalImport -> null
-                else -> Store.cachedUrl(song.source, song.id, quality)
-                    ?.takeIf { PlaybackCache.isFullyCached(pbKey) }
-                    ?.also { usedCachedUrl = true }
+                else -> null
+            }
+            // v1.5.1 r37：换源成功提示（用户可感知——歌还是那首歌，
+            // 但直链来自其它源）
+            if (toggled != null && onlineUrl != null) {
+                playError.tryEmit(
+                    "「${song.displayName}」原源取歌失败，已自动切换到 ${sourceLabel(toggled!!.song.source)} 源播放"
+                )
             }
             // v1.4.29：记录兜底状态供 onPlayerError 清直链重解析
             playingFromUrlCache = usedCachedUrl
             urlCacheSong = if (usedCachedUrl) song else null
             urlCacheBr = if (usedCachedUrl) quality else null
             urlCacheRetryDone = false
+            // v1.5.1 r28：记录取歌链路（播放页显示标记）
+            // v1.5.1 r38：缓存优先（usedCachedUrl 在 onlineUrl 之前判断）——
+            // 100% 缓存的歌显示「缓存」而非「自定义源/GD API」
+            resolveSource.value = when {
+                localUri != null -> "local"
+                usedCachedUrl -> "cache"
+                onlineUrl != null -> {
+                    // 优先模式：customSourceUrl 非空即自定义源；
+                    // 兜底模式：GD API 成功时 onlineUrl 来自 resolveUrl，
+                    // 失败才走 resolveFromCustomSource——用来源标志区分
+                    if (customSourceUrl != null) "custom"
+                    else if (fallbackCustomResolved) "custom"
+                    // v1.5.1 r37：自动换源成功——标记实际取到直链的链路
+                    else if (toggled != null) if (toggled!!.fromCustom) "custom" else "api"
+                    else "api"
+                }
+                else -> null
+            }
             if (url.isNullOrBlank()) {
                 consecutiveFailures++
                 // v1.4.13 #65：解析失败给用户明确提示（网络差/音源不可用）
@@ -786,13 +874,39 @@ object PlayerManager {
                 //   matchCover 匹配成功后写盘的 URL（无网络请求），没有就 null
                 // ② 在线歌：API 兜底加 3 秒超时，封面只是通知栏显示用，
                 //   不值得拖住 prepare()
+                // v1.5.1 r48：本地导入歌**内嵌封面优先**——通知栏封面先读
+                // 文件里嵌的图（APIC/PICTURE，写临时文件传 file URI，
+                // BitmapLoader 直读不走网络），没有才回落 URL 缓存
                 val cacheKey = "${song.source}:${song.picId.ifBlank { song.id }}"
                 val coverUrl = if (isLocalImport) {
-                    Store.localCoverUrl(song)
+                    val embeddedFileUri = appContext?.let {
+                        runCatching {
+                            com.solara.music.data.LocalCoverExtractor
+                                .notificationCoverFile(it, song)
+                        }.getOrNull()
+                    }
+                    embeddedFileUri ?: Store.localCoverUrl(song)
                 } else {
                     CoverCache.get(cacheKey)
                         ?: Store.onlineCoverUrl(song)?.also { CoverCache.put(cacheKey, it) }
-                        ?: withTimeoutOrNull(3000) { MusicApi.fetchPicUrl(song) }?.also { fetched ->
+                        ?: withTimeoutOrNull(3000) {
+                            // v1.5.1 r35：平台直连源码（kw/kg/tx/wy/mg）——GD API
+                            // 不支持这些源的 pic 查询，先走自定义源脚本（与取歌同链路）
+                            if (song.source == "kw" || song.source == "kg" ||
+                                song.source == "tx" || song.source == "wy" || song.source == "mg"
+                            ) {
+                                // v1.5.1 r35：平台直连源码——先平台官方接口（lx-music
+                                // musicSdk 同源），失败回落脚本
+                                runCatching {
+                                    com.solara.music.data.PlatformMediaApi.fetchPicUrl(song)
+                                }.getOrNull()
+                                    ?: runCatching {
+                                        com.solara.music.customsource.CustomSourceManager.getPicUrl(song)
+                                    }.getOrNull()
+                            } else {
+                                MusicApi.fetchPicUrl(song)
+                            }
+                        }?.also { fetched ->
                             CoverCache.put(cacheKey, fetched)
                             Store.saveOnlineCoverUrl(song, fetched)
                         }
@@ -851,11 +965,40 @@ object PlayerManager {
         }
     }
 
+    /**
+     * v1.5.1 r26：自定义音源取歌——把 D Music 的 Song 转成 lx-music 脚本
+     * 约定的 musicInfo 结构。
+     * v1.5.1 r29：musicInfo.source 统一转 lx 源码（平台直连搜的歌本来就是
+     * lx 源码；GD 搜的歌是 netease/tencent 等——脚本按 lx 源码分发）。
+     * v1.5.1 r32：结构对齐 lx-music MusicInfo 完整契约——顶层
+     * id/name/singer/source/interval + 嵌套 meta{songId,albumName,hash,
+     * strMediaMid,copyrightId}。此前只传 6 个平铺字段，脚本访问
+     * musicInfo.meta.songId 拿到 undefined → 拼请求/签名报错
+     * （「解析失败：脚本报错」根因）。构造逻辑统一收在
+     * CustomSourceManager.buildMusicInfo（与测试取歌同路径）。
+     */
+    private suspend fun resolveFromCustomSource(song: Song, quality: String): String? {
+        // v1.5.1 r33：链路诊断日志
+        android.util.Log.d("CustomSourceJS",
+            "resolveFromCustomSource song=${song.name.take(30)} source=${song.source} quality=$quality")
+        val url = CustomSourceManager.getMusicUrl(song.source, quality, song)
+        android.util.Log.d("CustomSourceJS",
+            "resolveFromCustomSource 结果: ${url?.take(100) ?: "null"}")
+        return url
+    }
+
     private fun randomIndex(size: Int, exclude: Int): Int {
         if (size <= 1) return 0
         var r = exclude
         while (r == exclude) r = (0 until size).random()
         return r
+    }
+
+    /** v1.5.1 r37：源码 → 显示名（换源提示用）。 */
+    private fun sourceLabel(source: String): String = when (source) {
+        "kw" -> "酷我"; "kg" -> "酷狗"; "tx" -> "QQ"; "wy" -> "网易"; "mg" -> "咪咕"
+        "netease" -> "网易"; "tencent" -> "QQ"; "kuwo" -> "酷我"; "kugou" -> "酷狗"; "migu" -> "咪咕"
+        else -> source
     }
 
     /**
