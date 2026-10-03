@@ -483,9 +483,16 @@ fun SongRow(
  * LazyColumn 长按拖动排序状态：拖动条目越过相邻条目时交换位置。
  * [onMove] 返回 false 表示移动无效（如下标越界），此时不更新拖动状态。
  *
- * v1.5.1 r49：边缘自动滚动——拖动条目接近视口上下边缘时列表按进入深度
- * 线性加速滚动（越深入越快），滚动量补偿进 dragOffset（视觉跟手不漂移），
- * 长列表可以一路拖到最前/最后，不再受可见区限制。
+ * v1.5.1 r49：边缘自动滚动——拖到视口上下边缘时列表按深度线性加速滚动。
+ * v1.5.1 r51 修三个 bug：
+ * ① 补偿用 scrollBy 的**实际返回值**（r49/r50 用期望值——列表到边界后
+ *   实际滚动 0 但 dragOffset 仍累加 → 条目 translationY 持续漂移飞出屏幕，
+ *   这就是「拖到边缘就不见」「第一首上滑消失」的根因）；
+ * ② 边缘判定改用**手指位置**（r49/r50 用条目顶/底——第一首歌 top≈0
+ *   天然在上边缘区内，长按即触发向上滚；手指位置才是用户意图）；
+ * ③ 自动滚动每轮滚动后立即做交换判定（r49/r50 只在 onDrag 手势回调里
+ *   交换——手指按住不动时列表滚了但顺序不变，拖动条目布局位置滚出
+ *   视口还会导致组件销毁、拖动中断）。
  */
 class DragReorderState(
     private val listState: LazyListState,
@@ -496,27 +503,35 @@ class DragReorderState(
     var dragOffset by mutableFloatStateOf(0f)
         private set
 
-    /** 拖动中条目在视口内的实时 Y（含 dragOffset），边缘滚动判定用。 */
-    internal var dragItemTopOnScreen: Float? = null
-    internal var dragItemBottomOnScreen: Float? = null
+    /** 手指在 LazyColumn 视口内的 Y（边缘滚动判定用）。 */
+    private var pointerY: Float? = null
 
     /** 自动滚动协程（每帧滚动一次，速度随边缘深度线性提升）。 */
     private var autoScrollJob: Job? = null
 
-    fun onStart(index: Int) {
+    /** [yInItem] = 手指相对条目组件的 Y，换算成视口坐标。 */
+    fun onStart(index: Int, yInItem: Float) {
         draggingIndex = index
         dragOffset = 0f
+        pointerY = listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.index == index }
+            ?.let { it.offset + yInItem }
     }
 
     fun onDrag(delta: Float) {
-        val current = draggingIndex ?: return
+        if (draggingIndex == null) return
         dragOffset += delta
+        pointerY = pointerY?.plus(delta)
+        checkSwap()
+    }
+
+    /** 交换判定：拖动条目视觉边界跨过相邻条目时交换（手势与自动滚动共用）。 */
+    private fun checkSwap() {
+        val current = draggingIndex ?: return
         val visible = listState.layoutInfo.visibleItemsInfo
         val currInfo = visible.firstOrNull { it.index == current } ?: return
         val start = currInfo.offset + dragOffset
         val end = start + currInfo.size
-        dragItemTopOnScreen = start
-        dragItemBottomOnScreen = end
         val target = visible.firstOrNull { vi ->
             vi.index != current &&
                 ((start >= vi.offset && start < vi.offset + vi.size) ||
@@ -525,86 +540,58 @@ class DragReorderState(
         if (target != null && onMove(current, target.index)) {
             draggingIndex = target.index
             dragOffset += currInfo.offset - target.offset
-            // 交换后重算屏幕坐标，保证边缘滚动判定连续
-            val newInfo = visible.firstOrNull { it.index == target.index }
-            if (newInfo != null) {
-                dragItemTopOnScreen = newInfo.offset + dragOffset
-                dragItemBottomOnScreen = dragItemTopOnScreen!! + newInfo.size
-            }
         }
     }
 
     fun onEnd() {
         draggingIndex = null
         dragOffset = 0f
-        dragItemTopOnScreen = null
-        dragItemBottomOnScreen = null
+        pointerY = null
         autoScrollJob?.cancel()
         autoScrollJob = null
     }
 
     /**
-     * v1.5.1 r49：拖动开始时启动边缘自动滚动协程。
-     * r50 修复崩溃：withFrameNanos 依赖组合帧时钟（MonotonicFrameClock），
-     * 裸 CoroutineScope(Dispatchers.Main) 上下文里没有帧时钟——长按启动
-     * 协程第一帧就抛 IllegalStateException("Frame clock is not available")
-     * 导致 App 崩溃。改用 delay(16) 轮询（~60fps，不依赖帧时钟）。
-     *
-     * 检查拖动条目位置，进入边缘区（距上下边缘 96px 内）按深度线性加速
-     * 滚动（0 → 22px/帧），滚动量补偿进 dragOffset（视觉跟手）。
+     * 拖动开始时启动边缘自动滚动协程（delay(16) 轮询，~60fps，
+     * r50：不用 withFrameNanos——裸协程上下文没有组合帧时钟会崩）。
+     * 手指进入视口上下 96px 边缘区按深度线性加速（0 → 22px/帧），
+     * 滚动量用实际返回值补偿进 dragOffset（视觉跟手），滚动后立即
+     * 判定交换（内容滚进条目区域就换位，手指按住不动也能持续滚）。
      */
     internal fun startAutoScroll() {
         if (autoScrollJob != null) return
         autoScrollJob = CoroutineScope(Dispatchers.Main.immediate).launch {
             while (isActive) {
                 delay(16)
-                val top = dragItemTopOnScreen
-                val bottom = dragItemBottomOnScreen
-                if (top != null && bottom != null) {
-                    val viewportTop = 0f
-                    val viewportBottom = listState.layoutInfo.viewportSize.height.toFloat()
-                    val edgeZone = 96f
-                    val maxSpeed = 22f
-                    // 上边缘：条目顶进入 [viewportTop, viewportTop+edgeZone)
-                    val upSpeed = if (top < viewportTop + edgeZone) {
-                        (viewportTop + edgeZone - top).coerceAtLeast(0f) / edgeZone * maxSpeed
-                    } else 0f
-                    // 下边缘：条目底进入 (viewportBottom-edgeZone, viewportBottom]
-                    val downSpeed = if (bottom > viewportBottom - edgeZone) {
-                        (bottom - (viewportBottom - edgeZone)).coerceAtLeast(0f) / edgeZone * maxSpeed
-                    } else 0f
-                    val scrollBy = downSpeed - upSpeed
-                    if (scrollBy != 0f) {
-                        // 列表滚动方向与条目视觉移动方向相反：
-                        // 列表向下滚（scrollBy>0）→ 条目视觉上移，补偿正值
-                        try {
-                            listState.scrollBy(scrollBy)
-                            dragOffset += scrollBy
-                            // 滚动后重算屏幕坐标（offset 已变）
-                            val current = draggingIndex
-                            if (current != null) {
-                                val info = listState.layoutInfo.visibleItemsInfo
-                                    .firstOrNull { it.index == current }
-                                if (info != null) {
-                                    dragItemTopOnScreen = info.offset + dragOffset
-                                    dragItemBottomOnScreen = dragItemTopOnScreen!! + info.size
-                                }
-                            }
-                        } catch (e: kotlinx.coroutines.CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            // 滚动失败忽略，下一轮重试
+                val fingerY = pointerY ?: continue
+                val viewportBottom = listState.layoutInfo.viewportSize.height.toFloat()
+                val edgeZone = 96f
+                val maxSpeed = 22f
+                val upSpeed = if (fingerY < edgeZone) {
+                    ((edgeZone - fingerY) / edgeZone).coerceIn(0f, 1f) * maxSpeed
+                } else 0f
+                val downSpeed = if (fingerY > viewportBottom - edgeZone) {
+                    ((fingerY - (viewportBottom - edgeZone)) / edgeZone).coerceIn(0f, 1f) * maxSpeed
+                } else 0f
+                val expected = downSpeed - upSpeed
+                if (expected != 0f) {
+                    try {
+                        // r51：补偿用实际滚动量——列表到边界时返回 0，
+                        // dragOffset 不再漂移（r49/r50 的崩溃级 bug）
+                        val actual = listState.scrollBy(expected)
+                        if (actual != 0f) {
+                            dragOffset += actual
+                            // r51：滚动后内容相对条目移动，立即判定交换
+                            checkSwap()
                         }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // 滚动失败忽略，下一轮重试
                     }
                 }
-                // 未拖动或不在边缘区时也保持循环，等下一帧
             }
         }
-    }
-
-    fun cancelAutoScroll() {
-        autoScrollJob?.cancel()
-        autoScrollJob = null
     }
 }
 
@@ -617,7 +604,7 @@ fun rememberDragReorderState(
 /**
  * 列表条目的长按拖动排序修饰符：拖动中的条目置顶绘制并跟随手指平移。
  * [index] 必须是该条目在 LazyColumn 中的绝对下标（包含非歌曲条目时需自行偏移）。
- * v1.5.1 r49：拖动期间启动边缘自动滚动（见 [DragReorderState.startAutoScroll]）。
+ * v1.5.1 r49：拖动期间启动边缘自动滚动；r51：手指位置传入边缘判定。
  */
 @Composable
 fun Modifier.dragReorder(dragState: DragReorderState, index: Int): Modifier {
@@ -634,9 +621,10 @@ fun Modifier.dragReorder(dragState: DragReorderState, index: Int): Modifier {
         }
         .pointerInput(Unit) {
             detectDragGesturesAfterLongPress(
-                onDragStart = {
+                onDragStart = { offset ->
                     view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                    dragState.onStart(currentIndex)
+                    // r51：手指在条目内的 Y → onStart 换算视口坐标做边缘判定
+                    dragState.onStart(currentIndex, offset.y)
                     dragState.startAutoScroll()
                 },
                 onDrag = { change, amount ->
