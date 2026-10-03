@@ -72,6 +72,11 @@ fun PlaylistsScreen(
     var showCreate by remember { mutableStateOf(false) }
     // v1.4.59：当前播放歌曲——歌单卡片显示播放中标记（当前歌属于该歌单）
     val currentSong by PlayerManager.currentSong.collectAsState()
+    // v1.5.1 r49：歌单列表拖动排序（含边缘自动滚动）
+    val listState = rememberLazyListState()
+    val dragState = rememberDragReorderState(listState) { from, to ->
+        Store.movePlaylist(from, to)
+    }
 
     val open = playlists.firstOrNull { it.id == openPlaylistId }
     // v1.4.58：详情页打开时拦截系统返回键 = 返回歌单列表
@@ -118,6 +123,7 @@ fun PlaylistsScreen(
             }
         } else {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -127,7 +133,9 @@ fun PlaylistsScreen(
                         isPlaying = currentSong?.let { cur ->
                             playlists[i].songs.any { it.sameAs(cur) }
                         } == true,
-                        onClick = { openPlaylistId = playlists[i].id }
+                        onClick = { openPlaylistId = playlists[i].id },
+                        // v1.5.1 r49：长按拖动排序
+                        modifier = Modifier.dragReorder(dragState, i)
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }
@@ -150,9 +158,14 @@ fun PlaylistsScreen(
 }
 
 @Composable
-private fun PlaylistCard(playlist: Playlist, isPlaying: Boolean, onClick: () -> Unit) {
+private fun PlaylistCard(
+    playlist: Playlist,
+    isPlaying: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(MaterialTheme.colorScheme.surface)

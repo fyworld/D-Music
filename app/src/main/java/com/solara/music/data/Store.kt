@@ -96,6 +96,12 @@ object Store {
     // CacheDataSource 100% 命中根本不会碰上游）
     private const val KEY_URL_CACHE = "url_cache"
 
+    // v1.5.1 r39：已播时长表（key=source:id → "mm:ss"）。
+    // GD API 搜索响应没有时长字段（interval 恒空），播放过的歌
+    // 由 ExoPlayer duration 落盘——最近/收藏/歌单里播过的 GD 源歌
+    // 行尾时长由此兜底显示（没播过的仍为空）。
+    private const val KEY_PLAYED_DURATIONS = "played_durations"
+
     /** v1.4.20：最后退出时的主界面状态（tab / mePage / showPlayer）。 */
     private const val KEY_UI_STATE = "ui_state"
 
@@ -675,6 +681,15 @@ object Store {
         return ok
     }
 
+    /** v1.5.1 r49：歌单列表手动拖动排序（我的歌单页）。 */
+    fun movePlaylist(from: Int, to: Int): Boolean {
+        val next = playlists.value.moved(from, to) ?: return false
+        playlists.value = next
+        writePlaylists()
+        backupAsync()
+        return true
+    }
+
     private fun updatePlaylist(id: String, transform: (Playlist) -> Playlist): Playlist? {
         val next = playlists.value.map { p ->
             if (p.id == id) transform(p) else p
@@ -1058,6 +1073,40 @@ object Store {
             org.json.JSONObject(prefs.getString(KEY_URL_CACHE, null) ?: "{}")
         }.getOrDefault(org.json.JSONObject())
 
+    // ---------- 已播时长表（v1.5.1 r39：GD 源歌时长兜底显示） ----------
+
+    /**
+     * 读取歌曲已播时长（key=source:id → "mm:ss"）。
+     * GD API 搜索不返回时长，播放过的歌由 ExoPlayer duration 落盘，
+     * SongRow 显示时 interval 为空查此表兜底。无记录返回 null。
+     */
+    fun playedDuration(song: Song): String? {
+        val key = "${song.source}:${song.id}"
+        return readPlayedDurations().optString(key).takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * 落盘歌曲已播时长（ExoPlayer STATE_READY 后 duration>0 时调用）。
+     * 空时长不存；与已存值相同不重复写盘。所有源的歌统一存
+     * （平台直连/本地歌 interval 已有值，SongRow 优先用 interval，
+     * 此表只对 interval 为空的歌生效——但统一存不挑源，逻辑最简）。
+     */
+    fun savePlayedDuration(song: Song, durationMs: Long) {
+        if (durationMs <= 0) return
+        val total = durationMs / 1000
+        val text = "%02d:%02d".format(total / 60, total % 60)
+        val key = "${song.source}:${song.id}"
+        val o = readPlayedDurations()
+        if (o.optString(key) == text) return
+        o.put(key, text)
+        prefs.edit().putString(KEY_PLAYED_DURATIONS, o.toString()).apply()
+    }
+
+    private fun readPlayedDurations(): org.json.JSONObject =
+        runCatching {
+            org.json.JSONObject(prefs.getString(KEY_PLAYED_DURATIONS, null) ?: "{}")
+        }.getOrDefault(org.json.JSONObject())
+
     private fun migrateLocalCoverKey(old: Song, new: Song) {
         // v1.4.58：id 可能含路径前缀，key 统一用纯文件名
         val oldName = old.id.removePrefix("local:").substringAfterLast('/')
@@ -1135,6 +1184,12 @@ object Store {
         put("url_id", s.urlId)
         put("lyric_id", s.lyricId)
         put("source", s.source)
+        // v1.5.1 r32：平台特有字段（自定义音源脚本解析必需）
+        if (s.hash.isNotBlank()) put("hash", s.hash)
+        if (s.strMediaMid.isNotBlank()) put("str_media_mid", s.strMediaMid)
+        if (s.copyrightId.isNotBlank()) put("copyright_id", s.copyrightId)
+        if (s.albumMid.isNotBlank()) put("album_mid", s.albumMid)
+        if (s.interval.isNotBlank()) put("interval", s.interval)
     }
 
     private fun songFromJson(o: JSONObject): Song? = runCatching {
@@ -1146,7 +1201,12 @@ object Store {
             picId = o.optString("pic_id"),
             urlId = o.optString("url_id"),
             lyricId = o.optString("lyric_id"),
-            source = o.optString("source").ifBlank { "netease" }
+            source = o.optString("source").ifBlank { "netease" },
+            hash = o.optString("hash"),
+            strMediaMid = o.optString("str_media_mid"),
+            copyrightId = o.optString("copyright_id"),
+            albumMid = o.optString("album_mid"),
+            interval = o.optString("interval")
         )
     }.getOrNull()
 
