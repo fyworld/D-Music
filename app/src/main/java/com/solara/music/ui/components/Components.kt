@@ -63,10 +63,10 @@ import com.solara.music.data.Store
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.gestures.scrollBy
 
 /**
@@ -545,15 +545,19 @@ class DragReorderState(
 
     /**
      * v1.5.1 r49：拖动开始时启动边缘自动滚动协程。
-     * 每帧（~16ms）检查拖动条目位置，进入边缘区（距上下边缘 96px 内）
-     * 按深度线性加速滚动（0 → 22px/帧），滚动量补偿进 dragOffset，
-     * 条目视觉位置不动、列表内容反向流动，与主流音乐 App 行为一致。
+     * r50 修复崩溃：withFrameNanos 依赖组合帧时钟（MonotonicFrameClock），
+     * 裸 CoroutineScope(Dispatchers.Main) 上下文里没有帧时钟——长按启动
+     * 协程第一帧就抛 IllegalStateException("Frame clock is not available")
+     * 导致 App 崩溃。改用 delay(16) 轮询（~60fps，不依赖帧时钟）。
+     *
+     * 检查拖动条目位置，进入边缘区（距上下边缘 96px 内）按深度线性加速
+     * 滚动（0 → 22px/帧），滚动量补偿进 dragOffset（视觉跟手）。
      */
     internal fun startAutoScroll() {
         if (autoScrollJob != null) return
         autoScrollJob = CoroutineScope(Dispatchers.Main.immediate).launch {
             while (isActive) {
-                withFrameNanos { }
+                delay(16)
                 val top = dragItemTopOnScreen
                 val bottom = dragItemBottomOnScreen
                 if (top != null && bottom != null) {
@@ -573,9 +577,8 @@ class DragReorderState(
                     if (scrollBy != 0f) {
                         // 列表滚动方向与条目视觉移动方向相反：
                         // 列表向下滚（scrollBy>0）→ 条目视觉上移，补偿正值
-                        runCatching {
+                        try {
                             listState.scrollBy(scrollBy)
-                        }.onSuccess {
                             dragOffset += scrollBy
                             // 滚动后重算屏幕坐标（offset 已变）
                             val current = draggingIndex
@@ -587,6 +590,10 @@ class DragReorderState(
                                     dragItemBottomOnScreen = dragItemTopOnScreen!! + info.size
                                 }
                             }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            // 滚动失败忽略，下一轮重试
                         }
                     }
                 }
