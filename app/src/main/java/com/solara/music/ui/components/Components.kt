@@ -612,13 +612,16 @@ class DragReorderState(
                         val stepUp = prevInfo?.let { (currInfo!!.offset - it.offset).toFloat() }
                         val actual = listState.scrollBy(effective)
                         accumulated += actual
-                        // 向下滚（内容上移）：每累积一个步长，把拖动条目在数据中下移一格，
-                        // 同时把列表滚回一格（布局位置复原）——条目「穿过」下方条目
+                        // 向下滚（内容上移）：每累积一个步长，把拖动条目在数据中下移一格。
+                        // 数学：滚动让所有条目布局 -step，交换让拖动条目布局 +step（移到
+                        // target 位置）——两者天然抵消，条目布局位置复原、视觉位置不变
+                        // （dragOffset 无需调整），列表保持净滚动。
+                        // r52 初版的错误：交换后又 scrollBy(-step) 把列表滚回——净滚动 0，
+                        // 用户看到列表完全不滚（模拟器误判：视口内容变化来自数据搬移
+                        // 而非滚动）。
                         if (accumulated > 0f && stepDown != null && accumulated >= stepDown) {
                             if (onMove(current, current + 1)) {
                                 draggingIndex = current + 1
-                                // 搬移后条目布局位置前移 stepDown，滚回 stepDown 复原：
-                                listState.scrollBy(-stepDown)
                                 accumulated -= stepDown
                             } else accumulated = 0f
                         }
@@ -626,7 +629,6 @@ class DragReorderState(
                         else if (accumulated < 0f && stepUp != null && -accumulated >= stepUp) {
                             if (onMove(current, current - 1)) {
                                 draggingIndex = current - 1
-                                listState.scrollBy(stepUp)
                                 accumulated += stepUp
                             } else accumulated = 0f
                         }
