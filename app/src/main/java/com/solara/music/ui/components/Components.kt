@@ -525,21 +525,27 @@ class DragReorderState(
         checkSwap()
     }
 
-    /** 交换判定：拖动条目视觉边界跨过相邻条目时交换（手势与自动滚动共用）。 */
+    /**
+     * 交换判定（手势拖动用）。
+     *
+     * r52：视觉中心落在哪个可见条目上就与哪个交换（单步约束保持
+     * 逐条手感）。自动滚动不走此路径——见 [startAutoScroll] 的
+     * 「数据搬移+滚动同步」方案。
+     */
     private fun checkSwap() {
         val current = draggingIndex ?: return
         val visible = listState.layoutInfo.visibleItemsInfo
         val currInfo = visible.firstOrNull { it.index == current } ?: return
-        val start = currInfo.offset + dragOffset
-        val end = start + currInfo.size
-        val target = visible.firstOrNull { vi ->
-            vi.index != current &&
-                ((start >= vi.offset && start < vi.offset + vi.size) ||
-                    (end > vi.offset && end <= vi.offset + vi.size))
+        val visualCenter = currInfo.offset + dragOffset + currInfo.size / 2f
+        val hit = visible.firstOrNull { vi ->
+            visualCenter >= vi.offset && visualCenter < vi.offset + vi.size
         }
-        if (target != null && onMove(current, target.index)) {
-            draggingIndex = target.index
-            dragOffset += currInfo.offset - target.offset
+        if (hit == null || hit.index == current) return
+        val target = if (hit.index > current) current + 1 else current - 1
+        val targetInfo = visible.firstOrNull { it.index == target } ?: return
+        if (onMove(current, target)) {
+            draggingIndex = target
+            dragOffset = currInfo.offset + dragOffset - targetInfo.offset
         }
     }
 
@@ -554,13 +560,24 @@ class DragReorderState(
     /**
      * 拖动开始时启动边缘自动滚动协程（delay(16) 轮询，~60fps，
      * r50：不用 withFrameNanos——裸协程上下文没有组合帧时钟会崩）。
-     * 手指进入视口上下 96px 边缘区按深度线性加速（0 → 22px/帧），
-     * 滚动量用实际返回值补偿进 dragOffset（视觉跟手），滚动后立即
-     * 判定交换（内容滚进条目区域就换位，手指按住不动也能持续滚）。
+     *
+     * r52「数据搬移+滚动同步」方案（根治「滚几行就停」）：
+     * 旧方案（滚动+补偿+checkSwap）的死结——自动滚动时所有条目
+     * 一起移动，拖动条目与相邻条目相对位置不变，交换判定永不触发；
+     * 条目布局位置随内容滚出视口被 LazyColumn 回收 → 手势协程
+     * 取消 → 滚动中断。
+     *
+     * 新方案：每滚过一个条目步长就「数据搬移一格 + 滚动回退一格」——
+     * 搬移使拖动条目在数据中前移一格（布局位置前移一格），滚动回退
+     * 使所有条目回到原布局位置——**拖动条目布局位置不变**（视觉也
+     * 不变），但它「穿过」了一个条目（数据顺序变了）。条目永不滚出
+     * 视口，手势持续，列表内容持续滚动。
      */
     internal fun startAutoScroll() {
         if (autoScrollJob != null) return
         autoScrollJob = CoroutineScope(Dispatchers.Main.immediate).launch {
+            // 累积滚动量，每过一个条目步长搬移一次
+            var accumulated = 0f
             while (isActive) {
                 delay(16)
                 val fingerY = pointerY ?: continue
@@ -574,20 +591,48 @@ class DragReorderState(
                     ((fingerY - (viewportBottom - edgeZone)) / edgeZone).coerceIn(0f, 1f) * maxSpeed
                 } else 0f
                 val expected = downSpeed - upSpeed
-                if (expected != 0f) {
+                // r52：列表已在顶/底时禁用对应方向滚动
+                val canScrollUp = listState.canScrollBackward
+                val canScrollDown = listState.canScrollForward
+                val effective = when {
+                    expected < 0f && !canScrollUp -> 0f
+                    expected > 0f && !canScrollDown -> 0f
+                    else -> expected
+                }
+                if (effective != 0f) {
                     try {
-                        // r51：补偿用实际滚动量——列表到边界时返回 0，
-                        // dragOffset 不再漂移（r49/r50 的崩溃级 bug）
-                        val actual = listState.scrollBy(expected)
-                        if (actual != 0f) {
-                            dragOffset += actual
-                            // r51：滚动后内容相对条目移动，立即判定交换
-                            checkSwap()
+                        val current = draggingIndex
+                        if (current == null) continue
+                        // 条目步长 = 相邻可见条目间距（含 spacing）
+                        val visible = listState.layoutInfo.visibleItemsInfo
+                        val currInfo = visible.firstOrNull { it.index == current }
+                        val nextInfo = visible.firstOrNull { it.index == current + 1 }
+                        val prevInfo = visible.firstOrNull { it.index == current - 1 }
+                        val stepDown = nextInfo?.let { (it.offset - currInfo!!.offset).toFloat() }
+                        val stepUp = prevInfo?.let { (currInfo!!.offset - it.offset).toFloat() }
+                        val actual = listState.scrollBy(effective)
+                        accumulated += actual
+                        // 向下滚（内容上移）：每累积一个步长，把拖动条目在数据中下移一格，
+                        // 同时把列表滚回一格（布局位置复原）——条目「穿过」下方条目
+                        if (accumulated > 0f && stepDown != null && accumulated >= stepDown) {
+                            if (onMove(current, current + 1)) {
+                                draggingIndex = current + 1
+                                // 搬移后条目布局位置前移 stepDown，滚回 stepDown 复原：
+                                listState.scrollBy(-stepDown)
+                                accumulated -= stepDown
+                            } else accumulated = 0f
+                        }
+                        // 向上滚：对称
+                        else if (accumulated < 0f && stepUp != null && -accumulated >= stepUp) {
+                            if (onMove(current, current - 1)) {
+                                draggingIndex = current - 1
+                                listState.scrollBy(stepUp)
+                                accumulated += stepUp
+                            } else accumulated = 0f
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (_: Exception) {
-                        // 滚动失败忽略，下一轮重试
                     }
                 }
             }

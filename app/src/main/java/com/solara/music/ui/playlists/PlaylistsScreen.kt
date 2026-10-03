@@ -369,7 +369,13 @@ private fun PlaylistDetailScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(playlist.songs.size) { i ->
+                // r52：key = 歌曲稳定标识——交换后组件跟随数据移动，
+                // 拖动手势协程保持绑定（无 key 时组件按位置复用，
+                // 交换后手势组件显示别的歌 → 手势取消 → 滚动中断）
+                items(
+                    count = playlist.songs.size,
+                    key = { i -> playlist.songs[i].source + ":" + playlist.songs[i].id }
+                ) { i ->
                     val song = playlist.songs[i]
                     SongRow(
                         song = song,
