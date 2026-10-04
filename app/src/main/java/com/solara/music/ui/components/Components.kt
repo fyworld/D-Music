@@ -493,6 +493,26 @@ fun SongRow(
  * ③ 自动滚动每轮滚动后立即做交换判定（r49/r50 只在 onDrag 手势回调里
  *   交换——手指按住不动时列表滚了但顺序不变，拖动条目布局位置滚出
  *   视口还会导致组件销毁、拖动中断）。
+ * v1.5.1 r56 修 r55 真机「滚 4-5 行就停」：
+ * ① 交换后 dragOffset 未减回步长——滚动补偿使 dragOffset 逐帧累积，
+ *   交换使布局净 0，视觉 = 布局 + dragOffset 每次交换跳一个步长、
+ *   持续漂移（模拟器纯按住无 onDrag 不暴露，真机微抖必现）；
+ * ② 漂移几百 px 的视觉位置被微抖触发的 onDrag→checkSwap 拿去判定，
+ *   hit 到远处错误条目 → 错误交换 + dragOffset 重算 → 布局乱跳 →
+ *   组件滚出视口被回收 → dragCancel。4-5 行 ≈ 漂移到视觉中心飞出
+ *   条目区域所需的交换次数。修复 = 交换后 dragOffset 减回步长（视觉
+ *   严格跟手，任何路径都不漂移）+ 自动滚动活跃期间关闭视觉判定
+ *   （换位唯一由累积滚动量驱动，两路径彻底隔离）。
+ * v1.5.1 r56b 补两个真机根因（模拟器日志实证）：
+ * ③ 手势路径 checkSwap 连续换位使布局逐次 ±stride——拖到视口边缘
+ *   外时布局累计越界 → 条目完全滚出视口 → LazyColumn 回收组件 →
+ *   dragCancel（「拖到顶部边缘过程中手势就断」）。修复 = 换位后
+ *   syncScrollAfterSwap 把新条目拉回视口（拉回量补偿进 dragOffset，
+ *   不计入 scrollAccum）；
+ * ④ onDragCancel 不区分条目——滚动时**任意**被回收条目的 detector
+ *   CANCELLED 都会调 onEnd() 误杀进行中的拖动（非拖动条目被回收
+ *   是滚动常态！）。修复 = 只有 draggingIndex == currentIndex 时才
+ *   onEnd；onDragEnd 同理放宽（UP 可能落在非拖动条目上）。
  */
 class DragReorderState(
     private val listState: LazyListState,
@@ -520,6 +540,18 @@ class DragReorderState(
     /** r55：条目步长（含间距），onStart 时从布局信息取。 */
     private var itemStride = 136f
 
+    /**
+     * r56：自动滚动是否活跃（最近 [AUTO_SCROLL_ACTIVE_WINDOW_MS] 内
+     * 有实际滚动量）。活跃期间 onDrag 不做视觉换位判定——换位唯一由
+     * 累积滚动量驱动（两路径隔离，微抖不再用漂移位置错误换位）。
+     */
+    private var lastAutoScrollNanos = 0L
+
+    private companion object {
+        /** r56：自动滚动活跃窗口——超时视为回到手势模式。 */
+        const val AUTO_SCROLL_ACTIVE_WINDOW_MS = 120L
+    }
+
     /** [yInItem] = 手指相对条目组件的 Y，换算成视口坐标。 */
     fun onStart(index: Int, yInItem: Float) {
         draggingIndex = index
@@ -540,8 +572,15 @@ class DragReorderState(
         if (draggingIndex == null) return
         dragOffset += delta
         pointerY = pointerY?.plus(delta)
-        checkSwap()
+        // r56：自动滚动活跃期间关闭视觉判定——换位唯一由累积滚动量
+        // 驱动。微抖的 ±1px 不再被拿去判定（r55 漂移位置错误换位根因）
+        if (!isAutoScrollActive()) checkSwap()
     }
+
+    /** r56：最近一次实际滚动距今是否在活跃窗口内。 */
+    private fun isAutoScrollActive(): Boolean =
+        lastAutoScrollNanos != 0L &&
+            System.nanoTime() - lastAutoScrollNanos < AUTO_SCROLL_ACTIVE_WINDOW_MS * 1_000_000L
 
     /**
      * 交换判定（手势拖动路径专用）。
@@ -549,6 +588,14 @@ class DragReorderState(
      * 视觉中心落在哪个可见条目上就与哪个交换（单步约束保持逐条
      * 手感）。手指在视口内移动时新条目天然可见，无需同步滚动。
      * 自动滚动路径**不走这里**——见 [autoScrollSwap]（r55）。
+     *
+     * r56b：换位后同步滚动防回收。向上/向下连续换位使布局逐次
+     * ±stride——拖到视口边缘外时（手指在视口坐标 <0 或 >viewport），
+     * 布局累计偏移使条目完全滚出视口（offset+size<0 或 offset>vp）
+     * → LazyColumn 回收组件 → pointerInput 协程取消 → dragCancel
+     * （真机「拖到顶部边缘过程中手势就断」根因，r54 只修了自动滚动
+     * 路径）。修复：换位后若新条目布局越界，scrollBy 拉回安全区并
+     * 把实际滚动量补偿进 dragOffset（视觉不变、布局回视口）。
      */
     private fun checkSwap() {
         val current = draggingIndex ?: return
@@ -564,6 +611,38 @@ class DragReorderState(
         if (onMove(current, target)) {
             draggingIndex = target
             dragOffset = currInfo.offset + dragOffset - targetInfo.offset
+            // r56b：换位后新条目布局越界 → 同步滚动拉回（防回收）
+            syncScrollAfterSwap(target)
+        }
+    }
+
+    /**
+     * r56b：换位后同步滚动——新条目布局滚出视口时把它拉回。
+     * scrollBy(正)=向下滚（offset 减小），scrollBy(负)=向上滚（offset 增大）。
+     * 顶部越界（offset<0）→ 向上滚拉回：scrollBy(offset)（负值）。
+     * 底部越界（offset+size>vp）→ 向下滚拉回：scrollBy(vp-size-offset)（正值）。
+     * 实际滚动量补偿进 dragOffset 保持视觉不变；滚动量也计入
+     * scrollAccum（真实发生了滚动）。
+     */
+    private fun syncScrollAfterSwap(target: Int) {
+        val info = listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.index == target } ?: return
+        val viewportH = listState.layoutInfo.viewportSize.height
+        val pullBack = when {
+            info.offset < 0 -> info.offset.toFloat()  // 负值=向上滚
+            info.offset + info.size > viewportH ->
+                (viewportH - info.size - info.offset).toFloat()  // 正值=向下滚
+            else -> return
+        }
+        if (pullBack == 0f) return
+        // scrollBy 是 suspend——在 Main 协程里执行（与 startAutoScroll 同模式）
+        CoroutineScope(Dispatchers.Main.immediate).launch {
+            val actual = try { listState.scrollBy(pullBack) } catch (_: Exception) { return@launch }
+            if (actual != 0f && draggingIndex != null) {
+                // 拉回量补偿进 dragOffset（视觉不变）。不计入 scrollAccum——
+                // 这是布局修正不是内容滚动，不能驱动换位判定（否则过度换位）
+                dragOffset += actual
+            }
         }
     }
 
@@ -571,19 +650,23 @@ class DragReorderState(
      * r55：自动滚动期间的换位判定——纯滚动量驱动。
      *
      * 每帧滚动后调用：累积滚动量，|累积| ≥ 一个条目步长就换位一格并
-     * 减去步长。数学（向下滚为例）：
-     * - 滚动 +stride：所有条目布局 -stride（含拖动条目）；
+     * 减去步长。数学（向下滚为例，滚动量 delta 为正）：
+     * - 滚动 +stride：所有条目布局 -stride（含拖动条目），dragOffset
+     *   补偿 +stride → 视觉跟手；
      * - 交换（current → current+1）：数据搬移使拖动条目组件移到原
-     *   target 位置——布局 +stride，**与滚动天然抵消**（r53 结论），
-     *   拖动条目布局位置不变（永不滚出视口、组件不被回收、手势持续）；
-     * - dragOffset 补偿 +stride（滚动）-stride（交换重算视觉-布局差）
-     *   = 视觉位置不变（跟手）。
+     *   target 位置——布局 +stride，与滚动抵消 → 拖动条目布局位置
+     *   不变（永不滚出视口、组件不被回收、手势持续）；
+     * - **r56 修正**：r55 注释声称「布局天然抵消故 dragOffset 不变」
+     *   是错的——布局净 0 但 dragOffset 已 +stride（滚动补偿），
+     *   视觉 = 布局 + dragOffset 每次交换跳 +stride、持续漂移。
+     *   交换后必须 dragOffset -= step * stride：布局 +stride 与
+     *   dragOffset -stride 抵消 → 视觉严格跟手、任何路径不漂移。
      * 判定纯滚动驱动，**对真机手指微抖完全免疫**（r54 的视觉判定在
      * 补偿下数学死锁：视觉中心永远落在拖动条目自己身上，永不交换）。
      */
     private fun autoScrollSwap(scrollDelta: Float) {
         scrollAccum += scrollDelta
-        val current = draggingIndex ?: return
+        var current = draggingIndex ?: return
         while (kotlin.math.abs(scrollAccum) >= itemStride) {
             val step = if (scrollAccum > 0) 1 else -1
             val target = current + step
@@ -593,10 +676,14 @@ class DragReorderState(
                 return
             }
             draggingIndex = target
+            current = target
             scrollAccum -= step * itemStride
-            // 交换后视觉连续：dragOffset 重算为视觉 - 新布局。
-            // 布局天然抵消（滚动 -stride + 交换 +stride = 0），新布局 =
-            // 旧布局，故 dragOffset 不变——无需任何调整（r53 结论）
+            // r56：交换使布局 +stride（数据搬移把拖动条目组件移到原
+            // target 位置），dragOffset 减回 stride 才能保持视觉不变。
+            // r55 漏了这一步 → dragOffset 逐交换漂移 → 真机 4-5 行后
+            // 微抖触发 checkSwap 用漂移视觉错误换位 → 布局乱跳 →
+            // 组件回收 → dragCancel
+            dragOffset -= step * itemStride
         }
     }
 
@@ -605,6 +692,7 @@ class DragReorderState(
         dragOffset = 0f
         pointerY = null
         scrollAccum = 0f
+        lastAutoScrollNanos = 0L
         autoScrollJob?.cancel()
         autoScrollJob = null
     }
@@ -621,7 +709,7 @@ class DragReorderState(
      * - 布局天然抵消：滚动 -stride + 交换 +stride = 0——拖动条目布局
      *   位置不变（**永不滚出视口**，组件不被回收、手势不取消）；
      *
-     * 历史教训（r49-r54 六轮迭代）：
+     * 历史教训（r49-r56 七轮迭代）：
      * - r52：视觉/相对位置判定在自动滚动下永不触发（所有条目一起移动，
      *   相对位置不变）；
      * - r53：删补偿后视觉漂移，真机微抖触发 onDrag→checkSwap 用漂移
@@ -629,7 +717,13 @@ class DragReorderState(
      * - r54：恢复补偿 + hit 判定——数学死锁：补偿使视觉位置固定，视觉
      *   中心相对拖动条目布局的偏移也固定，**永远落在自己身上**，永不
      *   交换（模拟器 ±2px 抖动恰好跨界是假象，真机 ±1px 在条目中部
-     *   永不跨界）→ 无同步滚动 → 布局滚出视口 → 回收 → dragCancel。
+     *   永不跨界）→ 无同步滚动 → 布局滚出视口 → 回收 → dragCancel；
+     * - r55：累积滚动量驱动换位（判定对微抖免疫），但交换后 dragOffset
+     *   未减回步长 → 逐交换漂移 → 真机微抖触发 checkSwap 用漂移视觉
+     *   错误换位 → 布局乱跳 → 回收 → dragCancel（滚 4-5 行就停）；
+     * - r56：交换后 dragOffset -= step*stride（视觉严格跟手）+ 自动滚动
+     *   活跃窗口内关闭 onDrag 视觉判定（两路径隔离，微抖只更新
+     *   pointerY/dragOffset，不参与换位）。
      */
     internal fun startAutoScroll() {
         if (autoScrollJob != null) return
@@ -661,8 +755,11 @@ class DragReorderState(
                         if (actual != 0f) {
                             // r54：补偿实际滚动量——视觉跟手（r53 删补偿是错的）
                             dragOffset += actual
+                            // r56：记录滚动时刻——活跃窗口内 onDrag 不做
+                            // 视觉判定（两路径隔离）
+                            lastAutoScrollNanos = System.nanoTime()
                             // r55：累积滚动量驱动换位（纯滚动驱动，
-                            // 对微抖免疫；布局天然抵消，组件不回收）
+                            // 对微抖免疫；r56：交换后 dragOffset 减回步长）
                             autoScrollSwap(actual)
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
@@ -712,10 +809,16 @@ fun Modifier.dragReorder(dragState: DragReorderState, index: Int): Modifier {
                     dragState.onDrag(amount.y)
                 },
                 onDragEnd = {
-                    dragState.onEnd()
+                    // r56b：手指只有一个——任何条目收到 UP 都意味着松手，
+                    // 结束拖动（UP 可能落在非拖动条目上——拖动条目已换位）
+                    if (dragState.draggingIndex != null) dragState.onEnd()
                 },
                 onDragCancel = {
-                    dragState.onEnd()
+                    // r56b：组件回收导致的 CANCELLED 来自任意条目（滚动时
+                    // 非拖动条目也会被回收）——只有拖动条目自己被取消才
+                    // 真正终止拖动，否则误杀进行中的拖动（真机「拖几行就
+                    // 停」的另一半根因）
+                    if (dragState.draggingIndex == currentIndex) dragState.onEnd()
                 }
             )
         }
