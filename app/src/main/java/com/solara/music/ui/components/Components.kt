@@ -509,56 +509,102 @@ class DragReorderState(
     /** 自动滚动协程（每帧滚动一次，速度随边缘深度线性提升）。 */
     private var autoScrollJob: Job? = null
 
+    /**
+     * r55：自动滚动期间的累积滚动量（自上次交换起）。
+     * 滚动让所有条目布局一起移动，但拖动条目与相邻条目**相对位置不变**
+     * ——视觉/位置判定在自动滚动下永不触发交换（r54 真机实证）。改用
+     * 纯滚动量驱动：每累积一个条目步长就换位一格。
+     */
+    private var scrollAccum = 0f
+
+    /** r55：条目步长（含间距），onStart 时从布局信息取。 */
+    private var itemStride = 136f
+
     /** [yInItem] = 手指相对条目组件的 Y，换算成视口坐标。 */
     fun onStart(index: Int, yInItem: Float) {
         draggingIndex = index
         dragOffset = 0f
+        scrollAccum = 0f
         pointerY = listState.layoutInfo.visibleItemsInfo
             .firstOrNull { it.index == index }
             ?.let { it.offset + yInItem }
+        // r55：条目步长 = 下一可见条目与本条目的 offset 差（含间距）
+        val infos = listState.layoutInfo.visibleItemsInfo.sortedBy { it.index }
+        val self = infos.indexOfFirst { it.index == index }
+        if (self in 0 until infos.size - 1) {
+            itemStride = (infos[self + 1].offset - infos[self].offset).toFloat()
+        }
     }
 
     fun onDrag(delta: Float) {
         if (draggingIndex == null) return
         dragOffset += delta
         pointerY = pointerY?.plus(delta)
-        checkSwap()  // 手势路径：手指在视口内，新条目天然可见，同步滚动量丢弃
+        checkSwap()
     }
 
     /**
-     * 交换判定。
+     * 交换判定（手势拖动路径专用）。
      *
-     * r54：视觉中心落在哪个可见条目上就与哪个交换（单步约束保持
-     * 逐条手感）。返回值 = 交换后需要的同步滚动量（0f=无交换）——
-     * 自动滚动路径用它把新位置条目滚回原条目位置（见 [startAutoScroll]），
-     * 手势路径忽略（手指在视口内，新条目天然可见）。
+     * 视觉中心落在哪个可见条目上就与哪个交换（单步约束保持逐条
+     * 手感）。手指在视口内移动时新条目天然可见，无需同步滚动。
+     * 自动滚动路径**不走这里**——见 [autoScrollSwap]（r55）。
      */
-    private fun checkSwap(): Float {
-        val current = draggingIndex ?: return 0f
+    private fun checkSwap() {
+        val current = draggingIndex ?: return
         val visible = listState.layoutInfo.visibleItemsInfo
-        val currInfo = visible.firstOrNull { it.index == current } ?: return 0f
+        val currInfo = visible.firstOrNull { it.index == current } ?: return
         val visualCenter = currInfo.offset + dragOffset + currInfo.size / 2f
         val hit = visible.firstOrNull { vi ->
             visualCenter >= vi.offset && visualCenter < vi.offset + vi.size
         }
-        if (hit == null || hit.index == current) return 0f
+        if (hit == null || hit.index == current) return
         val target = if (hit.index > current) current + 1 else current - 1
-        val targetInfo = visible.firstOrNull { it.index == target } ?: return 0f
+        val targetInfo = visible.firstOrNull { it.index == target } ?: return
         if (onMove(current, target)) {
             draggingIndex = target
-            // 视觉位置保持不变：新 dragOffset = 视觉 - 新布局
             dragOffset = currInfo.offset + dragOffset - targetInfo.offset
-            // r54b：同步滚动量 = 新旧条目布局差。自动滚动路径执行它，
-            // 把新条目带回原条目位置（视口内）——组件不被回收
-            return (targetInfo.offset - currInfo.offset).toFloat()
         }
-        return 0f
+    }
+
+    /**
+     * r55：自动滚动期间的换位判定——纯滚动量驱动。
+     *
+     * 每帧滚动后调用：累积滚动量，|累积| ≥ 一个条目步长就换位一格并
+     * 减去步长。数学（向下滚为例）：
+     * - 滚动 +stride：所有条目布局 -stride（含拖动条目）；
+     * - 交换（current → current+1）：数据搬移使拖动条目组件移到原
+     *   target 位置——布局 +stride，**与滚动天然抵消**（r53 结论），
+     *   拖动条目布局位置不变（永不滚出视口、组件不被回收、手势持续）；
+     * - dragOffset 补偿 +stride（滚动）-stride（交换重算视觉-布局差）
+     *   = 视觉位置不变（跟手）。
+     * 判定纯滚动驱动，**对真机手指微抖完全免疫**（r54 的视觉判定在
+     * 补偿下数学死锁：视觉中心永远落在拖动条目自己身上，永不交换）。
+     */
+    private fun autoScrollSwap(scrollDelta: Float) {
+        scrollAccum += scrollDelta
+        val current = draggingIndex ?: return
+        while (kotlin.math.abs(scrollAccum) >= itemStride) {
+            val step = if (scrollAccum > 0) 1 else -1
+            val target = current + step
+            if (target < 0 || !onMove(current, target)) {
+                // 到列表头/尾或移动失败：清空累积，停止换位（滚动继续到边界）
+                scrollAccum = 0f
+                return
+            }
+            draggingIndex = target
+            scrollAccum -= step * itemStride
+            // 交换后视觉连续：dragOffset 重算为视觉 - 新布局。
+            // 布局天然抵消（滚动 -stride + 交换 +stride = 0），新布局 =
+            // 旧布局，故 dragOffset 不变——无需任何调整（r53 结论）
+        }
     }
 
     fun onEnd() {
         draggingIndex = null
         dragOffset = 0f
         pointerY = null
+        scrollAccum = 0f
         autoScrollJob?.cancel()
         autoScrollJob = null
     }
@@ -567,26 +613,23 @@ class DragReorderState(
      * 拖动开始时启动边缘自动滚动协程（delay(16) 轮询，~60fps，
      * r50：不用 withFrameNanos——裸协程上下文没有组合帧时钟会崩）。
      *
-     * r54b 方案（补偿 + swap 同步滚动）：
+     * r55 方案（累积滚动量驱动换位）：
      * - 每帧滚动后把实际滚动量补偿进 dragOffset——拖动条目**视觉位置
      *   固定在手指下**（跟手）；
-     * - 滚动后 checkSwap：视觉中心（固定在边缘区）与条目布局位置
-     *   （随滚动上移）的相对关系持续变化——内容滚进视觉位置就交换；
-     * - **交换后同步滚动**（r54b 核心修复）：swap 返回新旧条目布局差，
-     *   自动滚动路径立即 scrollBy(差值) 把新位置条目带回原条目位置——
-     *   新条目永远在视口内（组件不被回收、手势不取消），视觉位置
-     *   不变（滚动量补偿进 dragOffset），净滚动=每帧滚动+每次 swap
-     *   的条目步长（速度反而提升）。
+     * - 每累积一个条目步长（136px）就换位一格——滚动让内容滚上来，
+     *   数据搬移让拖动条目「穿过」被滚过的条目；
+     * - 布局天然抵消：滚动 -stride + 交换 +stride = 0——拖动条目布局
+     *   位置不变（**永不滚出视口**，组件不被回收、手势不取消）；
      *
-     * r54 根因（日志实证）：swap 10→11 后条目 11 布局位置 1444 > 视口
-     * 高 1428——超出视口 16px → LazyColumn 回收组件 → pointerInput
-     * 协程取消 → dragCancel（swap 后仅 74ms）→ 滚动停止。
-     * 「只能滚 3-4 行」= 视口高度内条目从初始位置滚到视口外的距离。
-     *
-     * r52/r53 的教训：r52 交换后**每帧** scrollBy(-step) 滚回（净滚动
-     * 0，列表不滚）；r53 删补偿（视觉漂移，真机手指微抖触发 onDrag→
-     * checkSwap 用漂移的视觉位置判定，交换方向混乱）。r54b 只在 swap
-     * 瞬间滚一格（数据搬移的镜像滚动），数学自洽。
+     * 历史教训（r49-r54 六轮迭代）：
+     * - r52：视觉/相对位置判定在自动滚动下永不触发（所有条目一起移动，
+     *   相对位置不变）；
+     * - r53：删补偿后视觉漂移，真机微抖触发 onDrag→checkSwap 用漂移
+     *   位置判定，交换方向混乱；
+     * - r54：恢复补偿 + hit 判定——数学死锁：补偿使视觉位置固定，视觉
+     *   中心相对拖动条目布局的偏移也固定，**永远落在自己身上**，永不
+     *   交换（模拟器 ±2px 抖动恰好跨界是假象，真机 ±1px 在条目中部
+     *   永不跨界）→ 无同步滚动 → 布局滚出视口 → 回收 → dragCancel。
      */
     internal fun startAutoScroll() {
         if (autoScrollJob != null) return
@@ -614,21 +657,13 @@ class DragReorderState(
                 }
                 if (effective != 0f) {
                     try {
-                        // r54：补偿实际滚动量——视觉跟手（r53 删补偿是错的）
                         val actual = listState.scrollBy(effective)
                         if (actual != 0f) {
+                            // r54：补偿实际滚动量——视觉跟手（r53 删补偿是错的）
                             dragOffset += actual
-                            // 滚动后立即判定交换——视觉中心固定（补偿），
-                            // 布局上移，内容滚进视觉位置就交换
-                            val sync = checkSwap()
-                            // r54b：交换后同步滚动——把新位置条目带回
-                            // 原条目位置（视口内），组件不被回收
-                            if (sync != 0f) {
-                                val syncActual = listState.scrollBy(sync)
-                                if (syncActual != 0f) {
-                                    dragOffset += syncActual
-                                }
-                            }
+                            // r55：累积滚动量驱动换位（纯滚动驱动，
+                            // 对微抖免疫；布局天然抵消，组件不回收）
+                            autoScrollSwap(actual)
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
