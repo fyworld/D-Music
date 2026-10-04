@@ -23,6 +23,8 @@ import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.KeyboardDoubleArrowDown
+import androidx.compose.material.icons.filled.KeyboardDoubleArrowUp
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
@@ -302,13 +304,15 @@ internal object CoverCache {
 
 /**
  * 歌曲行：封面 + 标题/歌手 + 时长 + 更多操作。
- * 更多弹菜单：收藏（首位）、加入歌单、下载、移除（移除行为由所在列表定义）。
+ * 更多弹菜单：收藏（首位）、加入歌单、置顶、置底、下载、移除（移除行为由所在列表定义）。
  * v1.4.26：selectionMode=true 时切换为多选行——点击整行切换勾选，
  * 左侧封面位置显示勾选框，隐藏时长/更多按钮。
  * v1.4.59：isCurrent=true 时歌名前显示播放中标记（GraphicEq 图标+主色，
  * 与播放页队列样式一致），歌名/歌手文字转主色。
  * v1.5.1 r38：收藏按钮从行尾移进更多菜单首位（与播放页一致——行更简洁，
  * 收藏是低频操作）；原收藏按钮位置改显示歌曲时长（interval "mm:ss"）。
+ * v1.5.1 r58：置顶/置底菜单项（加在加入歌单后面）——仅对有顺序语义
+ * 的列表（歌单详情）传入回调显示；收藏/最近播放是时间序，不传即隐藏。
  */
 @Composable
 fun SongRow(
@@ -317,6 +321,8 @@ fun SongRow(
     onClick: () -> Unit,
     onToggleFavorite: () -> Unit,
     onAddToPlaylist: (() -> Unit)? = null,
+    onMoveToTop: (() -> Unit)? = null,
+    onMoveToBottom: (() -> Unit)? = null,
     onRemove: (() -> Unit)? = null,
     onDownload: (() -> Unit)? = null,
     onRename: (() -> Unit)? = null,
@@ -441,6 +447,25 @@ fun SongRow(
                                 Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null)
                             },
                             onClick = { menuOpen = false; onAddToPlaylist() }
+                        )
+                    }
+                    // v1.5.1 r58：置顶/置底（仅歌单详情等有顺序语义的列表传入）
+                    if (onMoveToTop != null) {
+                        DropdownMenuItem(
+                            text = { Text("置顶") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.KeyboardDoubleArrowUp, null)
+                            },
+                            onClick = { menuOpen = false; onMoveToTop() }
+                        )
+                    }
+                    if (onMoveToBottom != null) {
+                        DropdownMenuItem(
+                            text = { Text("置底") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.KeyboardDoubleArrowDown, null)
+                            },
+                            onClick = { menuOpen = false; onMoveToBottom() }
                         )
                     }
                     if (onDownload != null) {

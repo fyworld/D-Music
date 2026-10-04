@@ -384,6 +384,9 @@ private fun PlaylistDetailScreen(
                         onClick = { PlayerManager.setQueue(playlist.songs, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },
+                        // v1.5.1 r58：置顶/置底（歌单详情有顺序语义）
+                        onMoveToTop = { Store.movePlaylistSong(playlist.id, i, 0) },
+                        onMoveToBottom = { Store.movePlaylistSong(playlist.id, i, playlist.songs.size - 1) },
                         onRemove = { Store.removeFromPlaylist(playlist.id, song) },
                         onDownload = { onDownload(song) },
                         selectionMode = select.active,
