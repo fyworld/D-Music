@@ -504,15 +504,25 @@ fun SongRow(
  *   严格跟手，任何路径都不漂移）+ 自动滚动活跃期间关闭视觉判定
  *   （换位唯一由累积滚动量驱动，两路径彻底隔离）。
  * v1.5.1 r56b 补两个真机根因（模拟器日志实证）：
- * ③ 手势路径 checkSwap 连续换位使布局逐次 ±stride——拖到视口边缘
- *   外时布局累计越界 → 条目完全滚出视口 → LazyColumn 回收组件 →
- *   dragCancel（「拖到顶部边缘过程中手势就断」）。修复 = 换位后
- *   syncScrollAfterSwap 把新条目拉回视口（拉回量补偿进 dragOffset，
- *   不计入 scrollAccum）；
  * ④ onDragCancel 不区分条目——滚动时**任意**被回收条目的 detector
  *   CANCELLED 都会调 onEnd() 误杀进行中的拖动（非拖动条目被回收
  *   是滚动常态！）。修复 = 只有 draggingIndex == currentIndex 时才
  *   onEnd；onDragEnd 同理放宽（UP 可能落在非拖动条目上）。
+ * v1.5.1 r57 修 r56 真机「松手后列表失控滚动 + 条目重叠空白」：
+ * ⑤ r56b 的 syncScrollAfterSwap 用独立 launch 启动协程——**不受
+ *   autoScrollJob 管理**，拖动期间多次换位排队多个拉回协程，松手
+ *   后继续 scrollBy → 列表持续滚动（「放开手指列表自动滚动，按别
+ *   的条目才停」）；且松手后 draggingIndex=null 使补偿分支失效 →
+ *   dragOffset 不再补偿 → 条目视觉错乱（重叠）+ 滚动越界（空白）。
+ *   修复 = 整体删除（其防护前提本身不成立：手势换位后新条目布局
+ *   = hit 条目的原位置，必然可见，不会越界回收）；
+ * ⑥ 松手瞬间 dragOffset 硬归零 → 条目跳变。修复 = onEnd 启动
+ *   settleJob 落位动画（~120ms dragOffset 平滑归零），onStart 时
+ *   cancel（新拖动立即接管）。
+ * v1.5.1 r57b（用户方案）：拖动条目视觉位置 clamp 在视口内——
+ *   拖到最前/最后可见条目位置条目被钉住（完整可见），手指继续
+ *   下探进入边缘区驱动列表滚动，条目持续换位但**永不出界**。
+ *   与换位/滚动补偿自洽：clamp 界随 slot 平移同步移动。
  */
 class DragReorderState(
     private val listState: LazyListState,
@@ -528,6 +538,19 @@ class DragReorderState(
 
     /** 自动滚动协程（每帧滚动一次，速度随边缘深度线性提升）。 */
     private var autoScrollJob: Job? = null
+
+    /**
+     * r57：松手落位动画协程——dragOffset 平滑归零（~120ms），
+     * 消除松手瞬间条目跳变。onStart 时 cancel（新拖动立即接管）。
+     */
+    private var settleJob: Job? = null
+
+    /**
+     * r57：落位中的条目下标（动画期间 graphicsLayer 仍应用
+     * dragOffset——draggingIndex 已清 null）。动画结束清 null。
+     */
+    var settleIndex by mutableStateOf<Int?>(null)
+        private set
 
     /**
      * r55：自动滚动期间的累积滚动量（自上次交换起）。
@@ -554,6 +577,10 @@ class DragReorderState(
 
     /** [yInItem] = 手指相对条目组件的 Y，换算成视口坐标。 */
     fun onStart(index: Int, yInItem: Float) {
+        // r57：打断落位动画——新拖动立即接管 dragOffset
+        settleJob?.cancel()
+        settleJob = null
+        settleIndex = null
         draggingIndex = index
         dragOffset = 0f
         scrollAccum = 0f
@@ -571,10 +598,32 @@ class DragReorderState(
     fun onDrag(delta: Float) {
         if (draggingIndex == null) return
         dragOffset += delta
+        // r57b：视觉位置限制在视口内——条目始终完整可见（用户建议：
+        // 拖到最前/最后可见条目位置即停，列表继续滚动，条目不出界）。
+        // 与换位/滚动补偿自洽：所有路径保持视觉不变，clamp 界随 slot
+        // 平移同步移动；checkSwap/autoScrollSwap 后 dragOffset=视觉-新
+        // slot，视觉在界内 → 新值必在新 clamp 界内
+        clampToViewport()
         pointerY = pointerY?.plus(delta)
         // r56：自动滚动活跃期间关闭视觉判定——换位唯一由累积滚动量
         // 驱动。微抖的 ±1px 不再被拿去判定（r55 漂移位置错误换位根因）
         if (!isAutoScrollActive()) checkSwap()
+    }
+
+    /**
+     * r57b：把拖动条目的视觉位置限制在视口内（完整可见）。
+     * 视觉顶 ≥ 0 且视觉底 ≤ viewport——条目最多拖到与第一/最后
+     * 可见条目对齐。钉住后手指继续下探（pointerY 不 clamp）自然
+     * 进入边缘区驱动自动滚动，滚动期间条目钉在边界完整显示。
+     */
+    private fun clampToViewport() {
+        val idx = draggingIndex ?: return
+        val info = listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.index == idx } ?: return
+        val vpH = listState.layoutInfo.viewportSize.height.toFloat()
+        val min = -info.offset.toFloat()          // 视觉顶 = 0
+        val max = vpH - info.size - info.offset   // 视觉底 = vpH
+        if (max >= min) dragOffset = dragOffset.coerceIn(min, max)
     }
 
     /** r56：最近一次实际滚动距今是否在活跃窗口内。 */
@@ -589,13 +638,9 @@ class DragReorderState(
      * 手感）。手指在视口内移动时新条目天然可见，无需同步滚动。
      * 自动滚动路径**不走这里**——见 [autoScrollSwap]（r55）。
      *
-     * r56b：换位后同步滚动防回收。向上/向下连续换位使布局逐次
-     * ±stride——拖到视口边缘外时（手指在视口坐标 <0 或 >viewport），
-     * 布局累计偏移使条目完全滚出视口（offset+size<0 或 offset>vp）
-     * → LazyColumn 回收组件 → pointerInput 协程取消 → dragCancel
-     * （真机「拖到顶部边缘过程中手势就断」根因，r54 只修了自动滚动
-     * 路径）。修复：换位后若新条目布局越界，scrollBy 拉回安全区并
-     * 把实际滚动量补偿进 dragOffset（视觉不变、布局回视口）。
+     * r57：换位后新条目布局 = hit 条目的原位置（必然在视口内），
+     * 不存在越界回收——r56b 的 syncScrollAfterSwap 前提不成立且
+     * 协程泄漏（松手后失控滚动根因），已删除。
      */
     private fun checkSwap() {
         val current = draggingIndex ?: return
@@ -611,38 +656,6 @@ class DragReorderState(
         if (onMove(current, target)) {
             draggingIndex = target
             dragOffset = currInfo.offset + dragOffset - targetInfo.offset
-            // r56b：换位后新条目布局越界 → 同步滚动拉回（防回收）
-            syncScrollAfterSwap(target)
-        }
-    }
-
-    /**
-     * r56b：换位后同步滚动——新条目布局滚出视口时把它拉回。
-     * scrollBy(正)=向下滚（offset 减小），scrollBy(负)=向上滚（offset 增大）。
-     * 顶部越界（offset<0）→ 向上滚拉回：scrollBy(offset)（负值）。
-     * 底部越界（offset+size>vp）→ 向下滚拉回：scrollBy(vp-size-offset)（正值）。
-     * 实际滚动量补偿进 dragOffset 保持视觉不变；滚动量也计入
-     * scrollAccum（真实发生了滚动）。
-     */
-    private fun syncScrollAfterSwap(target: Int) {
-        val info = listState.layoutInfo.visibleItemsInfo
-            .firstOrNull { it.index == target } ?: return
-        val viewportH = listState.layoutInfo.viewportSize.height
-        val pullBack = when {
-            info.offset < 0 -> info.offset.toFloat()  // 负值=向上滚
-            info.offset + info.size > viewportH ->
-                (viewportH - info.size - info.offset).toFloat()  // 正值=向下滚
-            else -> return
-        }
-        if (pullBack == 0f) return
-        // scrollBy 是 suspend——在 Main 协程里执行（与 startAutoScroll 同模式）
-        CoroutineScope(Dispatchers.Main.immediate).launch {
-            val actual = try { listState.scrollBy(pullBack) } catch (_: Exception) { return@launch }
-            if (actual != 0f && draggingIndex != null) {
-                // 拉回量补偿进 dragOffset（视觉不变）。不计入 scrollAccum——
-                // 这是布局修正不是内容滚动，不能驱动换位判定（否则过度换位）
-                dragOffset += actual
-            }
         }
     }
 
@@ -687,14 +700,51 @@ class DragReorderState(
         }
     }
 
+    /**
+     * r57：松手落位。draggingIndex 立即清 null（停换位/停自动滚动/
+     * zIndex 复位），dragOffset 不再硬归零——启动 settleJob 平滑
+     * 动画归零（~120ms），条目优雅滑回数据位置，消除松手跳变。
+     * 动画期间 graphicsLayer 仍读 dragOffset（draggingIndex==index
+     * 已不成立——见 dragReorder 修饰符的 settleIndex）。
+     */
     fun onEnd() {
+        val settlingOffset = dragOffset
+        val settlingIndex = draggingIndex
         draggingIndex = null
-        dragOffset = 0f
         pointerY = null
         scrollAccum = 0f
         lastAutoScrollNanos = 0L
         autoScrollJob?.cancel()
         autoScrollJob = null
+        if (settlingIndex == null || settlingOffset == 0f) {
+            dragOffset = 0f
+            settleIndex = null
+            return
+        }
+        settleJob?.cancel()
+        settleIndex = settlingIndex
+        settleJob = CoroutineScope(Dispatchers.Main.immediate).launch {
+            try {
+                val durationMs = 120L
+                val frames = (durationMs / 16L).coerceAtLeast(1L)
+                var i = 0L
+                while (i < frames && isActive) {
+                    delay(16)
+                    i++
+                    val t = (i.toFloat() / frames).coerceIn(0f, 1f)
+                    // easeOutCubic：先快后慢，落位自然
+                    val eased = 1f - (1f - t) * (1f - t) * (1f - t)
+                    dragOffset = settlingOffset * (1f - eased)
+                }
+            } finally {
+                // r57b：竞态守卫——onStart 打断动画时 draggingIndex 已被
+                // 新拖动接管，finally 不得清 dragOffset/settleIndex
+                if (draggingIndex == null) {
+                    dragOffset = 0f
+                    settleIndex = null
+                }
+            }
+        }
     }
 
     /**
@@ -790,9 +840,10 @@ fun Modifier.dragReorder(dragState: DragReorderState, index: Int): Modifier {
     // 否则交换位置后会拿到过期下标
     val currentIndex by rememberUpdatedState(index)
     return this
-        .zIndex(if (dragState.draggingIndex == index) 1f else 0f)
+        .zIndex(if (dragState.draggingIndex == index || dragState.settleIndex == index) 1f else 0f)
         .graphicsLayer {
-            if (dragState.draggingIndex == index) {
+            // r57：拖动中或落位动画中都应用 dragOffset（松手后平滑归零）
+            if (dragState.draggingIndex == index || dragState.settleIndex == index) {
                 translationY = dragState.dragOffset
             }
         }
