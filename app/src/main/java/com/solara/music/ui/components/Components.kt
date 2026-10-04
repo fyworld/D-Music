@@ -854,6 +854,65 @@ fun rememberDragReorderState(
 ): DragReorderState = remember(listState) { DragReorderState(listState, onMove) }
 
 /**
+ * v1.5.1 r59b：置顶/置底后保持视口不动（列表不跳动）。
+ *
+ * 根因：LazyColumn 的滚动锚定（LazyListScrollPosition
+ * .updateScrollPositionIfTheFirstItemWasMoved）只跟踪**第一个可见
+ * 项的 key**——被移动条目恰好是第一个可见项时，视口跟着它跳到
+ * 新位置（置底 → 跳到底部；置顶 → 跳到顶部）。
+ *
+ * 修复：数据搬移**前**记住第一个可见项的 offset，搬移后用 index
+ * 变换数学算出「视口顶部应显示的条目」的新下标，scrollToItem
+ * 恢复。语义：视口显示的内容**不变**（除被移动条目从当前位置
+ * 消失/插入外，其他条目相对视口不动）。
+ *
+ * 条目从 [movedFrom] 移到 [movedTo] 后，视口顶部条目的新下标：
+ * - firstIndex < min(from,to) 或 > max(from,to)：不变（视口外发生的事）；
+ * - firstIndex == from：仍是 from（这个位置现在是原 from±1 的条目——
+ *   被移动项从当前位置消失，下面的条目顶上来）；
+ * - from < firstIndex ≤ to（置底）：-1（区间整体前移一格）；
+ * - to ≤ firstIndex < from（置顶）：+1（区间整体后移一格）。
+ *
+ * 注意：scrollToItem 必须在**数据重组后**执行才能拿到正确的新布局
+ * ——transform 只改数据源，重组在下一帧。本函数在 scrollToItem 前
+ * 挂起等待一帧（withFrameNanos 不可用于非组合上下文，改用
+ * awaitFrame 简易等待）确保新布局生效后再滚动。
+ */
+suspend fun keepScrollAfterMove(
+    listState: LazyListState,
+    movedFrom: Int,
+    movedTo: Int,
+    transform: () -> Boolean
+) {
+    val first = listState.layoutInfo.visibleItemsInfo.firstOrNull() ?: run {
+        transform(); return
+    }
+    val firstIndex = first.index
+    val firstOffset = first.offset
+    if (!transform()) return
+    val newIndex = when {
+        firstIndex == movedFrom -> movedFrom
+        movedFrom < firstIndex && firstIndex <= movedTo -> firstIndex - 1
+        movedTo <= firstIndex && firstIndex < movedFrom -> firstIndex + 1
+        else -> firstIndex
+    }
+    // 等一帧让数据重组完成（transform 触发的 StateFlow 更新 → 重组
+    // → LazyColumn 新布局）。不等的话 scrollToItem 作用在旧布局上，
+    // 重组后锚定机制又会把视口拉走。
+    kotlinx.coroutines.delay(50)
+    // scrollToItem 的负 offset 会被测量规范化（firstVisibleItem 重算），
+    // 部分滚出的条目无法直接用负 offset 表达——先对齐到条目顶部再
+    // scrollBy 滚回原偏移。注意方向：firstOffset<0（条目顶部在视口上方）
+    // 时要恢复需条目**上移**|firstOffset| = 窗口下移 = scrollBy 正值，
+    // 即 scrollBy(-firstOffset)——r59b 首版写成 scrollBy(firstOffset)
+    // 方向反了，置顶部分滚出场景视口上跳一行（SongRealA 顶替 RingB）
+    listState.scrollToItem(newIndex, 0)
+    if (firstOffset != 0) {
+        listState.scrollBy(-firstOffset.toFloat())
+    }
+}
+
+/**
  * 列表条目的长按拖动排序修饰符：拖动中的条目置顶绘制并跟随手指平移。
  * [index] 必须是该条目在 LazyColumn 中的绝对下标（包含非歌曲条目时需自行偏移）。
  * v1.5.1 r49：拖动期间启动边缘自动滚动；r51：手指位置传入边缘判定。

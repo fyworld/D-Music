@@ -32,6 +32,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,8 +44,10 @@ import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
 import com.solara.music.ui.components.dragReorder
+import com.solara.music.ui.components.keepScrollAfterMove
 import com.solara.music.ui.components.rememberDragReorderState
 import com.solara.music.ui.components.rememberMultiSelectState
+import kotlinx.coroutines.launch
 
 @Composable
 fun FavoritesScreen(
@@ -56,6 +59,7 @@ fun FavoritesScreen(
     // v1.4.59：当前播放歌曲——列表行显示播放中标记
     val currentSong by PlayerManager.currentSong.collectAsState()
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     val select = rememberMultiSelectState()
     var showBatchPlaylist by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -173,9 +177,22 @@ fun FavoritesScreen(
                         onClick = { PlayerManager.setQueue(favorites, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },
-                        // v1.5.1 r59：置顶/置底（收藏有顺序语义）
-                        onMoveToTop = { Store.moveFavorite(i, 0) },
-                        onMoveToBottom = { Store.moveFavorite(i, favorites.size - 1) },
+                        // v1.5.1 r59/r59b：置顶/置底（收藏有顺序语义）。
+                        // r59b：keepScrollAfterMove 保持视口不动（置底不再跳到底部）
+                        onMoveToTop = {
+                            scope.launch {
+                                keepScrollAfterMove(listState, i, 0) {
+                                    Store.moveFavorite(i, 0)
+                                }
+                            }
+                        },
+                        onMoveToBottom = {
+                            scope.launch {
+                                keepScrollAfterMove(listState, i, favorites.size - 1) {
+                                    Store.moveFavorite(i, favorites.size - 1)
+                                }
+                            }
+                        },
                         onRemove = { Store.removeFavorite(song) },
                         onDownload = { onDownload(song) },
                         selectionMode = select.active,

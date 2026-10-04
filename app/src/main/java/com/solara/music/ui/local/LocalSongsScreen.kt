@@ -66,6 +66,7 @@ import com.solara.music.ui.components.LocalFileOpsHandler
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
 import com.solara.music.ui.components.dragReorder
+import com.solara.music.ui.components.keepScrollAfterMove
 import com.solara.music.ui.components.rememberDragReorderState
 import com.solara.music.ui.components.rememberMultiSelectState
 import kotlinx.coroutines.Dispatchers
@@ -549,12 +550,41 @@ fun LocalSongsScreen(
                         onClick = { PlayerManager.setQueue(songs, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },
-                        // v1.5.1 r59：置顶/置底（本地歌曲有顺序语义）
+                        // v1.5.1 r59/r59b：置顶/置底（本地歌曲有顺序语义）。
+                        // r59b：keepScrollAfterMove 保持视口不动（置底不再
+                        // 跳到底部）。dirKey/songs 是组合时捕获——菜单回调
+                        // 触发时列表数据可能已变（换目录），从委托变量现读
                         onMoveToTop = {
-                            if (Store.moveLocalSong(dirKey, i, 0, songs)) orderVersion++
+                            scope.launch {
+                                val dk = currentPath ?: ""
+                                val ss = content?.let { Store.applyLocalSongOrder(dk, it.songs) }
+                                    ?: emptyList()
+                                // r59b：下标基准统一为 LazyColumn 绝对下标
+                                // （文件夹行在前）——keepScrollAfterMove 内部
+                                // 读的 first.index 是绝对下标，传歌曲下标
+                                // 会在根目录视图错位 folderCount
+                                val fc = content?.folders?.size ?: 0
+                                keepScrollAfterMove(listState, fc + i, fc) {
+                                    if (Store.moveLocalSong(dk, i, 0, ss)) {
+                                        orderVersion++
+                                        true
+                                    } else false
+                                }
+                            }
                         },
                         onMoveToBottom = {
-                            if (Store.moveLocalSong(dirKey, i, songs.size - 1, songs)) orderVersion++
+                            scope.launch {
+                                val dk = currentPath ?: ""
+                                val ss = content?.let { Store.applyLocalSongOrder(dk, it.songs) }
+                                    ?: emptyList()
+                                val fc = content?.folders?.size ?: 0
+                                keepScrollAfterMove(listState, fc + i, fc + ss.size - 1) {
+                                    if (Store.moveLocalSong(dk, i, ss.size - 1, ss)) {
+                                        orderVersion++
+                                        true
+                                    } else false
+                                }
+                            }
                         },
                         onRemove = { pendingDelete = song },
                         onRename = { pendingRename = song },

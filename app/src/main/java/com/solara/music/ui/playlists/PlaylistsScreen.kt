@@ -41,6 +41,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,8 +56,10 @@ import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
 import com.solara.music.ui.components.dragReorder
+import com.solara.music.ui.components.keepScrollAfterMove
 import com.solara.music.ui.components.rememberDragReorderState
 import com.solara.music.ui.components.rememberMultiSelectState
+import kotlinx.coroutines.launch
 
 /**
  * 歌单主页：自建歌单列表。
@@ -240,6 +243,7 @@ private fun PlaylistDetailScreen(
     // v1.4.59：当前播放歌曲——列表行显示播放中标记
     val currentSong by PlayerManager.currentSong.collectAsState()
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     var showRename by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -384,9 +388,22 @@ private fun PlaylistDetailScreen(
                         onClick = { PlayerManager.setQueue(playlist.songs, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },
-                        // v1.5.1 r58：置顶/置底（歌单详情有顺序语义）
-                        onMoveToTop = { Store.movePlaylistSong(playlist.id, i, 0) },
-                        onMoveToBottom = { Store.movePlaylistSong(playlist.id, i, playlist.songs.size - 1) },
+                        // v1.5.1 r58/r59b：置顶/置底（歌单详情有顺序语义）。
+                        // r59b：keepScrollAfterMove 保持视口不动（置底不再跳到底部）
+                        onMoveToTop = {
+                            scope.launch {
+                                keepScrollAfterMove(listState, i, 0) {
+                                    Store.movePlaylistSong(playlist.id, i, 0)
+                                }
+                            }
+                        },
+                        onMoveToBottom = {
+                            scope.launch {
+                                keepScrollAfterMove(listState, i, playlist.songs.size - 1) {
+                                    Store.movePlaylistSong(playlist.id, i, playlist.songs.size - 1)
+                                }
+                            }
+                        },
                         onRemove = { Store.removeFromPlaylist(playlist.id, song) },
                         onDownload = { onDownload(song) },
                         selectionMode = select.active,
