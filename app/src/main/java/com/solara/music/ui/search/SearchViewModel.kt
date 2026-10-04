@@ -2,7 +2,9 @@ package com.solara.music.ui.search
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.solara.music.customsource.CustomSourceManager
 import com.solara.music.data.MusicApi
+import com.solara.music.data.PlatformSearchApi
 import com.solara.music.data.Song
 import com.solara.music.data.Store
 import com.solara.music.data.moved
@@ -46,6 +48,27 @@ class SearchViewModel : ViewModel() {
         query.value = q
     }
 
+    /**
+     * v1.5.1 r29：当前是否处于「平台直连搜索」模式——
+     * 启用了自定义音源 + 优先策略 + 沙箱就绪（脚本声明了支持的源）。
+     * 此时搜索页源列表切换为「聚合 + 脚本支持的源」。
+     */
+    val platformMode: Boolean
+        get() = CustomSourceManager.isPreferred && CustomSourceManager.sandboxReady
+
+    /** 平台直连模式下的源 tab 列表（聚合 + 脚本支持的源）。 */
+    val platformSources: List<Pair<String, String>>
+        get() {
+            val supported = CustomSourceManager.sandboxSources.keys
+                .filter { it in PlatformSearchApi.sourceNames }
+                .sortedBy { PlatformSearchApi.sourceNames.keys.indexOf(it) }
+            if (supported.isEmpty()) return emptyList()
+            return buildList {
+                add(PlatformSearchApi.SRC_ALL to "聚合")
+                supported.forEach { add(it to PlatformSearchApi.sourceNames.getValue(it)) }
+            }
+        }
+
     fun changeSource(src: String) {
         if (source.value == src) return
         source.value = src
@@ -84,7 +107,7 @@ class SearchViewModel : ViewModel() {
         error.value = null
         hasMore.value = false
         viewModelScope.launch {
-            runCatching { MusicApi.search(source.value, keyword, page) }
+            runCatching { doSearch(keyword, page) }
                 .onSuccess { songs ->
                     results.value = songs
                     hasMore.value = songs.size >= PAGE_SIZE
@@ -104,7 +127,7 @@ class SearchViewModel : ViewModel() {
         if (keyword.isEmpty() || isLoading.value || isLoadingMore.value || !hasMore.value) return
         isLoadingMore.value = true
         viewModelScope.launch {
-            runCatching { MusicApi.search(source.value, keyword, page + 1) }
+            runCatching { doSearch(keyword, page + 1) }
                 .onSuccess { songs ->
                     if (songs.isEmpty()) {
                         hasMore.value = false
@@ -123,6 +146,35 @@ class SearchViewModel : ViewModel() {
                     error.value = e.message ?: "加载失败，请稍后重试"
                 }
             isLoadingMore.value = false
+        }
+    }
+
+    /**
+     * v1.5.1 r29：搜索分发——平台直连模式走 PlatformSearchApi
+     * （聚合=并发全平台+相似度排序；单平台=直连该平台），否则走 GD API。
+     * v1.5.1 r40：GD 模式失效兜底——GD API 2026-09 服务端变更后只剩
+     * netease/joox/bilibili 三个稳定源（kuwo 等全部 400），且 "all"
+     * （离开平台模式的残留）GD API 也不支持——搜索失败时回落平台直连。
+     */
+    private suspend fun doSearch(keyword: String, page: Int): List<Song> {
+        if (platformMode && source.value == PlatformSearchApi.SRC_ALL) {
+            // 聚合搜索：单平台失败返回空，全失败才报错
+            val songs = PlatformSearchApi.search(PlatformSearchApi.SRC_ALL, keyword, page)
+            if (songs.isEmpty()) throw java.io.IOException("所有平台搜索均失败，请检查网络")
+            return songs
+        }
+        if (platformMode && source.value in PlatformSearchApi.sourceNames.keys) {
+            return PlatformSearchApi.search(source.value, keyword, page)
+        }
+        return try {
+            MusicApi.search(source.value, keyword, page)
+        } catch (e: Exception) {
+            // 失效源（kuwo/tencent/kugou/migu）或 "all" 残留 → 平台直连兜底
+            val lxSrc = PlatformSearchApi.toPlatform(source.value)
+                ?: if (source.value == PlatformSearchApi.SRC_ALL) PlatformSearchApi.SRC_ALL
+                else null
+                ?: throw e
+            PlatformSearchApi.search(lxSrc, keyword, page)
         }
     }
 }

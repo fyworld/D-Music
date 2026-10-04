@@ -1,6 +1,7 @@
 package com.solara.music
 
 import android.app.Application
+import com.solara.music.customsource.CustomSourceManager
 import com.solara.music.data.Store
 import com.solara.music.player.PlaybackCache
 import com.solara.music.player.PlayerManager
@@ -12,6 +13,8 @@ class SolaraApp : Application() {
         Store.init(this)
         // v1.4.25：播放缓存初始化（设置读取上限；Service 创建时也会兜底调用）
         PlaybackCache.init(this)
+        // v1.5.1 r26：自定义音源——恢复已启用的脚本（异步装载 QuickJS 沙箱）
+        CustomSourceManager.init(this)
         // 立即恢复上次队列：不等 Service（其创建有延迟窗口），让队列 UI 与
         // MiniPlayer 第一时间可见；服务就绪后 attachPlayer 会做同样恢复
         PlayerManager.restoreQueueIfEmpty()

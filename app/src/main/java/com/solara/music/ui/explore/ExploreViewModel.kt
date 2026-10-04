@@ -22,8 +22,13 @@ class ExploreViewModel : ViewModel() {
 
     companion object {
         const val EXPLORE_COUNT = 30
-        /** 原版探索雷达使用的音源池。 */
-        private val RADAR_SOURCES = listOf("netease", "kuwo")
+        /**
+         * 原版探索雷达使用的音源池。
+         * v1.5.1 r40：kuwo 已被 GD API 下线（2026-09 服务端变更，只剩
+         * netease/joox/bilibili 三个稳定源）——换 joox（实测搜索+封面
+         * 正常；直链解析弱，播放时自动换源兜底）。
+         */
+        private val RADAR_SOURCES = listOf("netease", "joox")
     }
 
     /** 本次探索使用的风格，null 表示尚未探索。 */

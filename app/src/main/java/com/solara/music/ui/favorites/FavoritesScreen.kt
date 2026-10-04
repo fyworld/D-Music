@@ -158,7 +158,13 @@ fun FavoritesScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(favorites.size) { i ->
+                // r52：key = 歌曲稳定标识——交换后组件跟随数据移动，
+                // 拖动手势协程保持绑定（无 key 时组件按位置复用，
+                // 交换后手势组件显示别的歌 → 手势取消 → 滚动中断）
+                items(
+                    count = favorites.size,
+                    key = { i -> favorites[i].source + ":" + favorites[i].id }
+                ) { i ->
                     val song = favorites[i]
                     SongRow(
                         song = song,
@@ -167,6 +173,9 @@ fun FavoritesScreen(
                         onClick = { PlayerManager.setQueue(favorites, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },
+                        // v1.5.1 r59：置顶/置底（收藏有顺序语义）
+                        onMoveToTop = { Store.moveFavorite(i, 0) },
+                        onMoveToBottom = { Store.moveFavorite(i, favorites.size - 1) },
                         onRemove = { Store.removeFavorite(song) },
                         onDownload = { onDownload(song) },
                         selectionMode = select.active,

@@ -54,13 +54,23 @@ class ChannelBalanceRenderersFactory(context: Context) : DefaultRenderersFactory
         // 偏左时右声道衰减（左满右弱），偏右时左声道衰减。
         val leftGain = if (b <= 0.5f) 1f else (2f - 2f * b).coerceIn(0f, 1f)
         val rightGain = if (b >= 0.5f) 1f else (2f * b).coerceIn(0f, 1f)
-        // 立体声 2x2 对角阵：输出左 = 输入左×leftGain，输出右 = 输入右×rightGain
+        // v1.5.1 r25：对角系数 1f → 0.999f——绕过 ChannelMixingMatrix 的
+        // isIdentity 判定（media3 1.3.1 反编译确认：isIdentity = isDiagonal &&
+        // 全对角系数==1）。居中时矩阵 [1,0,0,1] 是 identity → onConfigure
+        // 返回 NOT_SET → processor 被旁路出音频链 → 之后滑杆更新矩阵也
+        // 无人消费（queueInput 永不调用）——「平衡没有起作用」根因。
+        // 0.999 与 1.0 听感零差异（-0.009dB），但保证 processor 永远在链上，
+        // 滑杆调节实时生效。queueInput 每次从 map 现查矩阵（反编译确认），
+        // 热更新天然支持。
+        val lg = leftGain * 0.999f
+        val rg = rightGain * 0.999f
+        // 立体声 2x2 对角阵：输出左 = 输入左×lg，输出右 = 输入右×rg
         val matrix = ChannelMixingMatrix(
             /* inputChannelCount = */ 2,
             /* outputChannelCount = */ 2,
             /* mixingCoefficients = */ floatArrayOf(
-                leftGain, 0f,   // 输出左：输入左 × leftGain + 输入右 × 0
-                0f, rightGain   // 输出右：输入左 × 0 + 输入右 × rightGain
+                lg, 0f,   // 输出左：输入左 × lg + 输入右 × 0
+                0f, rg    // 输出右：输入左 × 0 + 输入右 × rg
             )
         )
         channelMixingProcessor.putChannelMixingMatrix(matrix)
@@ -76,7 +86,7 @@ class ChannelBalanceRenderersFactory(context: Context) : DefaultRenderersFactory
             ChannelMixingMatrix(
                 /* inputChannelCount = */ 1,
                 /* outputChannelCount = */ 2,
-                /* mixingCoefficients = */ floatArrayOf(leftGain, rightGain)
+                /* mixingCoefficients = */ floatArrayOf(lg, rg)
             )
         )
         for (channels in 3..8) {

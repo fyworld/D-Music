@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
@@ -94,7 +95,7 @@ import com.solara.music.ui.search.SearchViewModel
 import com.solara.music.ui.settings.SettingsScreen
 
 /** "我的"页面内的子页面。 */
-private enum class MePage { SETTINGS, DOWNLOADS, LOCAL_SONGS, ABOUT }
+private enum class MePage { SETTINGS, DOWNLOADS, LOCAL_SONGS, CUSTOM_SOURCE, ABOUT }
 
 @Composable
 fun SolaraApp() {
@@ -306,6 +307,16 @@ fun SolaraApp() {
                                         }
                                     )
                                     DropdownMenuItem(
+                                        text = { Text("自定义音源") },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Extension, contentDescription = null)
+                                        },
+                                        onClick = {
+                                            meMenuOpen = false
+                                            mePage = MePage.CUSTOM_SOURCE.name
+                                        }
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("关于") },
                                         leadingIcon = {
                                             Icon(Icons.Filled.Info, contentDescription = null)
@@ -344,6 +355,11 @@ fun SolaraApp() {
                         onAddToPlaylist = { playlistTarget = it },
                         onShowMessage = showMessage,
                         onLyricUpdated = { playerVm.notifyLyricUpdated() }
+                    )
+                    // v1.5.1 r26：自定义音源管理页
+                    MePage.CUSTOM_SOURCE.name -> com.solara.music.ui.customsource.CustomSourceScreen(
+                        onBack = { mePage = null },
+                        onShowMessage = showMessage
                     )
                     MePage.ABOUT.name -> AboutScreen(onBack = { mePage = null })
                     else -> SettingsScreen()

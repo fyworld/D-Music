@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -64,6 +65,8 @@ import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.LocalFileOpsHandler
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
+import com.solara.music.ui.components.dragReorder
+import com.solara.music.ui.components.rememberDragReorderState
 import com.solara.music.ui.components.rememberMultiSelectState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -130,7 +133,48 @@ fun LocalSongsScreen(
     // v1.4.58：重命名当前文件夹
     var pendingFolderRename by remember { mutableStateOf(false) }
 
-    val songs = content?.songs ?: emptyList()
+    // v1.5.1 r38：本地歌时长补全结果（song.id → "m:ss"）。列目录 effect
+    // 后台逐首读元数据写入；换目录/刷新 tick 变化时清空重读
+    var durations by remember(currentPath, refreshTick) {
+        mutableStateOf<Map<String, String>>(emptyMap())
+    }
+
+    // v1.5.1 r59：列表状态（拖动排序需要）+ 每文件夹自定义顺序。
+    // dirKey：根目录 ""、子目录用相对路径——顺序表的 key。
+    // orderVersion：顺序版本号——moveLocalSong 成功后 bump，触发
+    // songs 重算（content/dirKey 都没变时顺序变化也要刷新 UI）
+    val listState = rememberLazyListState()
+    val dirKey = currentPath ?: ""
+    var orderVersion by remember { mutableStateOf(0) }
+    val songs = remember(content, dirKey, orderVersion) {
+        content?.let { Store.applyLocalSongOrder(dirKey, it.songs) } ?: emptyList()
+    }
+    val folderCount = content?.folders?.size ?: 0
+
+    // r59：拖动排序。onMove 的 from/to 是 LazyColumn 绝对下标
+    // （文件夹行在前）——减 folderCount 换算成歌曲下标再搬。
+    // lambda 只在首次组合创建一次，捕获的普通 val（dirKey/songs）
+    // 会过期——currentPath/content/orderVersion 是委托变量（捕获
+    // State 本体）读的永远是现值；歌曲列表在 lambda 内从 Store
+    // 重算（顺序表刚写入，读必是新序）
+    val dragState = rememberDragReorderState(listState) { from, to ->
+        val dirKeyNow = currentPath ?: ""
+        val folderCountNow = content?.folders?.size ?: 0
+        val songsNow = content?.let { Store.applyLocalSongOrder(dirKeyNow, it.songs) }
+            ?: emptyList()
+        val ok = Store.moveLocalSong(
+            dirKeyNow, from - folderCountNow, to - folderCountNow, songsNow
+        )
+        if (ok) orderVersion++
+        ok
+    }
+
+    // r59：换目录重置滚动——listState 提升到页面级后跨目录存活
+    // （loading 分支销毁 LazyColumn 也不再销毁 state），不重置会
+    // 带着旧目录的滚动位置进新目录
+    LaunchedEffect(currentPath) {
+        listState.scrollToItem(0)
+    }
 
     /** 返回上级路径（根的父级 = null = 根）。 */
     fun parentOf(path: String?): String? =
@@ -150,7 +194,10 @@ fun LocalSongsScreen(
         }
     }
 
-    // 列目录（路径或刷新 tick 变化时重列）
+    // 列目录 + v1.5.1 r38 时长补全（路径或刷新 tick 变化时重列）。
+    // 时长读元数据与列目录合并成一个 effect——原拆两个同键 effect 有竞态：
+    // 两者同时启动，时长 effect 读 songs 时 content 还是旧值（首次为
+    // null → targets 空 → 直接 return，时长永远不出现）。
     LaunchedEffect(currentPath, refreshTick) {
         loading = true
         val result = withContext(Dispatchers.IO) {
@@ -159,6 +206,35 @@ fun LocalSongsScreen(
         canRead = result != null
         content = result
         loading = false
+        // 本地歌 interval 恒空（songFromFileName 不读元数据）——IO 后台
+        // 逐个 MediaMetadataRetriever 读（每首约几十 ms），结果写内存 map
+        // 渐进刷新 UI；换目录/刷新自动作废（key 变了 map 清空重读）。
+        val targets = (result?.songs ?: emptyList()).filter { it.interval.isBlank() }
+        if (targets.isNotEmpty()) {
+            val acc = mutableMapOf<String, String>()
+            targets.forEach { song ->
+                val dur = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val f = DownloadManager.localFileOf(song) ?: return@runCatching null
+                        val mmr = android.media.MediaMetadataRetriever()
+                        try {
+                            mmr.setDataSource(f.absolutePath)
+                            mmr.extractMetadata(
+                                android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
+                            )?.toLongOrNull()?.let { ms ->
+                                if (ms > 0) "%d:%02d".format(ms / 60000, (ms % 60000) / 1000) else null
+                            }
+                        } finally {
+                            runCatching { mmr.release() }
+                        }
+                    }.getOrNull()
+                }
+                if (dur != null) {
+                    acc[song.id] = dur
+                    durations = acc.toMap()
+                }
+            }
+        }
     }
 
     /** v1.4.58：文件删除/重命名成功后刷新当前目录。 */
@@ -433,6 +509,7 @@ fun LocalSongsScreen(
             }
 
             else -> LazyColumn(
+                state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -456,7 +533,14 @@ fun LocalSongsScreen(
                     )
                 }
                 // 歌曲行（在后）
-                items(songs.size) { i ->
+                // r59：key = 稳定标识（r52 教训——无 key 时组件按位置
+                // 复用，交换后手势组件显示别的歌 → 手势取消）；
+                // dragReorder 的 index 是 LazyColumn 绝对下标（文件夹
+                // 行在前，需 +folderCount 偏移）
+                items(
+                    count = songs.size,
+                    key = { i -> songs[i].source + ":" + songs[i].id }
+                ) { i ->
                     val song = songs[i]
                     SongRow(
                         song = song,
@@ -465,12 +549,23 @@ fun LocalSongsScreen(
                         onClick = { PlayerManager.setQueue(songs, i) },
                         onToggleFavorite = { Store.toggleFavorite(song) },
                         onAddToPlaylist = { onAddToPlaylist(song) },
+                        // v1.5.1 r59：置顶/置底（本地歌曲有顺序语义）
+                        onMoveToTop = {
+                            if (Store.moveLocalSong(dirKey, i, 0, songs)) orderVersion++
+                        },
+                        onMoveToBottom = {
+                            if (Store.moveLocalSong(dirKey, i, songs.size - 1, songs)) orderVersion++
+                        },
                         onRemove = { pendingDelete = song },
                         onRename = { pendingRename = song },
                         onDownloadLyric = { lyricTarget = song },
                         selectionMode = select.active,
                         selected = select.isSelected(song),
-                        onSelect = { select.toggle(song) }
+                        onSelect = { select.toggle(song) },
+                        // v1.5.1 r38：本地歌时长（后台 MediaMetadataRetriever 补全）
+                        durationOverride = durations[song.id],
+                        modifier = if (select.active) Modifier
+                        else Modifier.dragReorder(dragState, folderCount + i)
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }

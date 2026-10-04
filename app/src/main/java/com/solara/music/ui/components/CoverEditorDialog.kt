@@ -101,8 +101,11 @@ fun CoverEditorDialog(
             val q = query.trim().ifBlank { defaultQuery }
             val src = Store.settings.value.source.ifBlank { "netease" }
             val list = withContext(Dispatchers.IO) {
-                runCatching { MusicApi.search(src, q, page = 1, count = 20) }
-                    .getOrDefault(emptyList())
+                // v1.5.1 r40：改走 LyricRepository.searchCandidates 统一路由——
+                // 修复聚合 tab（src="all"）与 GD 失效源（kuwo 等）时候选搜索
+                // 空列表（「未找到候选」）双根因。候选是 lx 源码时 applyOnline
+                // 已走平台直连取封面。
+                com.solara.music.data.LyricRepository.searchCandidates(src, q, count = 20)
             }
             results = list
             searching = false
@@ -122,22 +125,43 @@ fun CoverEditorDialog(
             val ctx = context.applicationContext
             val ok = withContext(Dispatchers.IO) {
                 runCatching {
-                    val url = MusicApi.fetchPicUrl(candidate) ?: return@runCatching false
+                    // v1.5.1 r37：候选是 lx 源码（kw/kg/tx/wy/mg）时走平台
+                    // 直连取封面（GD API 不支持——r37-3 根因），失败回落
+                    // 自定义源脚本；GD 源码候选仍走 GD API
+                    val url = if (com.solara.music.data.PlatformMediaApi.isPlatformSource(candidate.source)) {
+                        runCatching {
+                            com.solara.music.data.PlatformMediaApi.fetchPicUrl(candidate)
+                        }.getOrNull()
+                            ?: runCatching {
+                                com.solara.music.customsource.CustomSourceManager.getPicUrl(candidate)
+                            }.getOrNull()
+                    } else {
+                        MusicApi.fetchPicUrl(candidate)
+                    } ?: return@runCatching false
                     val bytes = java.net.URL(url).openStream().use { it.readBytes() }
                     // v1.4.44：清自定义封面（相册图）——它优先级最高，
                     // 不清则永远挡住新应用的在线封面（"设过相册图后
                     // 在线候选换不动"的根因）。用户点在线候选 = 想用它，
                     // 相册图让位。
                     Store.clearCustomCover(song)
-                    if (LocalCoverExtractor.isLocalSong(song)) {
+                    // v1.5.1 r47：在线下载存量歌（文件在 D_Music，id 非
+                    // local:）定位本地文件后同样嵌入——此前只认本地导入
+                    // 歌，封面只进 URL 缓存不落文件
+                    var onlineFileName: String? = null
+                    if (!LocalCoverExtractor.isLocalSong(song)) {
+                        onlineFileName = com.solara.music.data.DownloadManager
+                            .findLocalFileAbsPath(ctx, song)?.let { java.io.File(it).name }
+                    }
+                    val hasLocalFile = LocalCoverExtractor.isLocalSong(song) || onlineFileName != null
+                    if (hasLocalFile) {
                         // 本地歌：嵌入文件（失败降级 URL 缓存，UI 仍能显示）
-                        val embedded = TagEmbedder.embedCoverInto(ctx, song, bytes)
+                        val embedded = TagEmbedder.embedCoverInto(ctx, song, bytes, onlineFileName)
                         if (!embedded) Store.saveLocalCoverUrl(song, url)
                         // v1.4.42：嵌入成功必须清旧 URL 缓存——URL 缓存优先级
                         // 高于内嵌封面，不清会挡住新封面（自动匹配过的歌都有旧记录）
                         else Store.clearLocalCoverUrl(song)
                     } else {
-                        // 在线歌：存 URL 缓存（Coil 直接加载）
+                        // 纯在线歌（未下载过）：存 URL 缓存（Coil 直接加载）
                         Store.saveOnlineCoverUrl(song, url)
                         // v1.4.42：同步内存缓存——CoverImage 的 url 状态先查
                         // CoverCache，不更新则命中旧值不刷新
@@ -181,9 +205,17 @@ fun CoverEditorDialog(
                     val jpeg = out.toByteArray()
                     // 存自定义封面（本地/在线歌通用，最高优先级）
                     Store.saveCustomCover(ctx, song, jpeg) != null
-                    // 本地歌：同时嵌入音频文件（其他播放器也能显示；失败不影响自定义封面）
-                    if (LocalCoverExtractor.isLocalSong(song)) {
-                        runCatching { TagEmbedder.embedCoverInto(ctx, song, jpeg) }
+                    // v1.5.1 r47：在线下载存量歌同样嵌入文件（同 applyOnline
+                    // 修复——此前只认本地导入歌）
+                    var onlineFileName: String? = null
+                    if (!LocalCoverExtractor.isLocalSong(song)) {
+                        onlineFileName = com.solara.music.data.DownloadManager
+                            .findLocalFileAbsPath(ctx, song)?.let { java.io.File(it).name }
+                    }
+                    if (LocalCoverExtractor.isLocalSong(song) || onlineFileName != null) {
+                        runCatching {
+                            TagEmbedder.embedCoverInto(ctx, song, jpeg, onlineFileName)
+                        }
                         // v1.4.42：清旧 URL 缓存，保证清除自定义封面后
                         // 显示的也是新嵌入的封面而非自动匹配的旧图
                         Store.clearLocalCoverUrl(song)

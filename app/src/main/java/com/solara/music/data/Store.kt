@@ -123,6 +123,16 @@ object Store {
      */
     private const val KEY_WAS_PLAYING = "was_playing"
 
+    /**
+     * v1.5.1 r59：本地歌曲每文件夹自定义顺序表。
+     * JSON：{ "Music/D_Music": ["文件A.mp3", "文件B.mp3", ...], ... }
+     * key = 文件夹相对路径（根目录用 ""）；value = 该文件夹内音频
+     * 文件名按用户自定义顺序排列。默认文件名序，用户拖动/置顶/
+     * 置底后写入覆盖；文件增删自动增量合并（新文件追加尾、已删
+     * 文件剔除）。
+     */
+    private const val KEY_LOCAL_SONG_ORDERS = "local_song_orders"
+
     /** 最近播放列表上限：超出裁掉最旧的。 */
     private const val RECENT_LIMIT = 300
 
@@ -826,6 +836,63 @@ object Store {
         localBrowsePath.value = path
         if (path == null) prefs.edit().remove(KEY_LOCAL_BROWSE_PATH).apply()
         else prefs.edit().putString(KEY_LOCAL_BROWSE_PATH, path).apply()
+    }
+
+    // ---------- 本地歌曲每文件夹自定义顺序（v1.5.1 r59） ----------
+
+    /**
+     * 读取顺序表原始 JSON（内部用）。损坏/不存在返回空对象。
+     */
+    private fun readLocalSongOrders(): org.json.JSONObject = runCatching {
+        org.json.JSONObject(prefs.getString(KEY_LOCAL_SONG_ORDERS, null) ?: "{}")
+    }.getOrDefault(org.json.JSONObject())
+
+    /** 顺序表整体写回。 */
+    private fun writeLocalSongOrders(o: org.json.JSONObject) {
+        prefs.edit().putString(KEY_LOCAL_SONG_ORDERS, o.toString()).apply()
+    }
+
+    /**
+     * 应用自定义顺序到文件夹扫描结果（v1.5.1 r59）。
+     *
+     * [dirKey] = 文件夹相对路径（根目录传 ""）；[songs] = 文件名序
+     * 扫描结果。返回重排后的列表：
+     * - 顺序表里有的文件按表内顺序排前；
+     * - 新增文件（表里没有）按文件名序追加到尾部；
+     * - 表里已不存在的文件名自动剔除。
+     * 顺序表无该文件夹 → 原样返回（文件名序）。
+     */
+    fun applyLocalSongOrder(dirKey: String, songs: List<Song>): List<Song> {
+        val arr = readLocalSongOrders().optJSONArray(dirKey) ?: return songs
+        val order = mutableListOf<String>()
+        for (i in 0 until arr.length()) {
+            arr.optString(i).takeIf { it.isNotBlank() }?.let(order::add)
+        }
+        if (order.isEmpty()) return songs
+        val byName = songs.associateBy { it.id.removePrefix("local:").substringAfterLast('/') }
+        val result = mutableListOf<Song>()
+        // 表内顺序优先（文件还在的才保留）
+        order.forEach { name -> byName[name]?.let(result::add) }
+        // 新文件按文件名序追加
+        songs.filter { s -> s !in result }.forEach(result::add)
+        return result
+    }
+
+    /**
+     * 移动文件夹内歌曲（v1.5.1 r59：拖动/置顶/置底统一入口）。
+     *
+     * [dirKey] = 文件夹相对路径（根目录 ""）；[from]/[to] = 当前
+     * 显示列表（应用顺序后）的下标。返回是否成功。
+     * 顺序表按「当前显示顺序」全量重建——天然吸收文件增删，无需
+     * 单独维护增量。
+     */
+    fun moveLocalSong(dirKey: String, from: Int, to: Int, currentSongs: List<Song>): Boolean {
+        val names = currentSongs.map { it.id.removePrefix("local:").substringAfterLast('/') }
+        val next = names.moved(from, to) ?: return false
+        val o = readLocalSongOrders()
+        o.put(dirKey, org.json.JSONArray(next))
+        writeLocalSongOrders(o)
+        return true
     }
 
     /**

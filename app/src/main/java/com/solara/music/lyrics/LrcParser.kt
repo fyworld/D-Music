@@ -12,16 +12,34 @@ object LrcParser {
 
     fun parse(raw: String?): List<LrcLine> {
         if (raw.isNullOrBlank()) return emptyList()
-        val timed = raw.split('\n').mapNotNull { line ->
-            val m = LINE_PATTERN.find(line) ?: return@mapNotNull null
-            val ms = m.groupValues[3].padEnd(3, '0').take(3).toInt()
-            val time = m.groupValues[1].toInt() * 60.0 +
-                m.groupValues[2].toInt() +
-                ms / 1000.0
-            val text = m.groupValues[4].trim()
+        // v1.5.1：混合模式——带时间标签的行正常解析；无标签行不再丢弃，
+        // 继承上一带标签行的时间（歌词编辑器追加换行文本的场景）。
+        // 全文无任何标签时仍走纯文本分支（伪时间轴）。
+        val lines = raw.split('\n')
+        var sawTimedLine = false
+        var lastTime = 0.0
+        val timed = lines.mapNotNull { line ->
+            val m = LINE_PATTERN.find(line)
+            val text: String
+            val time: Double
+            if (m != null) {
+                val ms = m.groupValues[3].padEnd(3, '0').take(3).toInt()
+                time = m.groupValues[1].toInt() * 60.0 +
+                    m.groupValues[2].toInt() +
+                    ms / 1000.0
+                text = m.groupValues[4].trim()
+                sawTimedLine = true
+                lastTime = time
+            } else {
+                // 无标签行：继承上一带标签行的时间
+                time = lastTime
+                text = line.trim()
+            }
             if (text.isEmpty()) null else LrcLine(time, text)
-        }.sortedBy { it.time }
-        if (timed.isNotEmpty()) return timed
+        }
+        if (sawTimedLine) return timed.sortedBy { it.time }
+        // 无标签行继承时间后与上一行同刻——排序稳定（sortedBy 稳定排序），
+        // 行顺序保持输入顺序。
 
         // v1.4.9：无时间轴的纯文本歌词（内嵌 USLT 常见此格式）——
         // 按行生成"伪时间轴"（每行 +1 秒），高亮随播放逐行推进，

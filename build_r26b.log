@@ -1,0 +1,170 @@
+Starting a Gradle Daemon, 1 incompatible and 2 stopped Daemons could not be reused, use --status for details
+> Task :app:checkKotlinGradlePluginConfigurationErrors
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preFullDebugBuild UP-TO-DATE
+> Task :app:generateFullDebugBuildConfig UP-TO-DATE
+> Task :app:checkFullDebugAarMetadata UP-TO-DATE
+> Task :app:generateFullDebugResValues UP-TO-DATE
+> Task :app:mapFullDebugSourceSetPaths UP-TO-DATE
+> Task :app:generateFullDebugResources UP-TO-DATE
+> Task :app:mergeFullDebugResources UP-TO-DATE
+> Task :app:packageFullDebugResources UP-TO-DATE
+> Task :app:parseFullDebugLocalResources UP-TO-DATE
+> Task :app:createFullDebugCompatibleScreenManifests UP-TO-DATE
+> Task :app:extractDeepLinksFullDebug UP-TO-DATE
+> Task :app:processFullDebugMainManifest UP-TO-DATE
+> Task :app:processFullDebugManifest UP-TO-DATE
+> Task :app:processFullDebugManifestForPackage UP-TO-DATE
+> Task :app:processFullDebugResources UP-TO-DATE
+
+> Task :app:compileFullDebugKotlin
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:9 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:13 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:14 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:22 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:27 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:28 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:33 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:34 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:35 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:37 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:39 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:40 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:42 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:43 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:45 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:46 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:47 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:49 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:9 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:12 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:13 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:18 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:19 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:20 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:24 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:25 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:26 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:27 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:40 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:41 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:42 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:44 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:439:51 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:440:9 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:440:16 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:440:26 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:13 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:16 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:18 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:19 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:28 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:30 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:34 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:35 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:45 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:46 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:47 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:48 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:56 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:57 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:58 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:59 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:63 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:64 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:65 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:66 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:67 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:68 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:70 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:76 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:77 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:94 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:95 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:96 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:97 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:441:98 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:13 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:18 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:20 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:25 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:26 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:27 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:31 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:32 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:33 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:442:35 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:13 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:25 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:27 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:32 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:33 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:34 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:45 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:46 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:48 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:51 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:52 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:443:53 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:13 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:21 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:23 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:28 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:29 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:30 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:37 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:38 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:40 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:43 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:44 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:444:45 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:13 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:20 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:22 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:27 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:28 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:29 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:35 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:36 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:38 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:41 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:42 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:445:43 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:13 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:22 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:24 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:29 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:30 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:31 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:39 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:40 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:42 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:45 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:446:46 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:447:9 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:448:5 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:449:1 Expecting a top level declaration
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:427:47 Unresolved reference: script
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:427:65 'return' is not allowed here
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:433:49 Function declaration must have a name
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:434:63 Unresolved reference: line
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:434:72 'break' and 'continue' are only allowed inside a loop
+e: file:///G:/WorkBuddy/SolaraAndroid/app/src/main/java/com/solara/music/customsource/CustomSourceSandbox.kt:436:33 'break' and 'continue' are only allowed inside a loop
+
+> Task :app:compileFullDebugKotlin FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:compileFullDebugKotlin'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
+   > Compilation error. See log for more details
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to get full insights.
+> Get more help at https://help.gradle.org.
+
+BUILD FAILED in 29s
+15 actionable tasks: 2 executed, 13 up-to-date

@@ -109,5 +109,8 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.6.0")
     // MP3 ID3v2 标签读写：下载后嵌入封面/歌词到文件
     implementation("com.mpatric:mp3agic:0.9.1")
+    // v1.5.1 r26：自定义音源——QuickJS 沙箱执行 lx-music 生态的
+    // 音源脚本（wang.harlon.quickjs 与洛雪音乐同款绑定库，Maven Central）
+    implementation("wang.harlon.quickjs:wrapper-android:2.4.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

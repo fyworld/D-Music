@@ -3,6 +3,7 @@
 package com.solara.music.ui.player
 
 import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -125,6 +126,8 @@ fun PlayerScreen(
     val queue by PlayerManager.queue.collectAsState()
     val currentIndex by PlayerManager.currentIndex.collectAsState()
     val favorites by Store.favorites.collectAsState()
+    // v1.5.1 r28：取歌链路标记（custom=自定义源/api=GD音乐台/local=本地/cache=缓存）
+    val resolveSource by PlayerManager.resolveSource.collectAsState()
     val lyrics by vm.lyrics.collectAsState()
     val lyricLoading by vm.lyricLoading.collectAsState()
     // v1.4.15：按歌歌词偏移（每首歌独立校准，随歌曲切换/调节按钮重读）
@@ -453,6 +456,9 @@ fun PlayerScreen(
      * 2) 本地歌曲：嵌入音频文件（MP3 USLT / FLAC 伴生 .lrc），跨播放器生效
      * 3) 清掉偏移/打点数据（校准已固化进新 LRC，留着会被二次叠加）
      * 4) 刷新歌词显示 + Toast 反馈
+     * v1.5.1 r44：嵌入范围扩大——在线下载存量歌（文件在 D_Music，id 非
+     * local:）同样定位本地文件强制覆盖嵌入（此前只认本地导入歌，校准
+     * 只进 App 缓存不落文件——FLAC 同目录 .lrc 不更新校准时间的根因）。
      */
     fun saveCalibratedLyric() {
         val s = song ?: return
@@ -460,9 +466,21 @@ fun PlayerScreen(
         val ctx = context.applicationContext
         scope.launch {
             val isLocal = LocalCoverExtractor.isLocalSong(s)
-            val embedded = if (isLocal) {
+            // v1.5.1 r44：在线下载存量歌定位本地文件（找到才嵌入）
+            var onlineFileName: String? = null
+            if (!isLocal) {
+                onlineFileName = withContext(Dispatchers.IO) {
+                    runCatching {
+                        com.solara.music.data.DownloadManager.findLocalFileAbsPath(ctx, s)
+                    }.getOrNull()?.let { java.io.File(it).name }
+                }
+            }
+            val hasLocalFile = isLocal || onlineFileName != null
+            val embedded = if (hasLocalFile) {
                 withContext(Dispatchers.IO) {
-                    runCatching { TagEmbedder.embedLyricInto(ctx, s, lrc) }.getOrDefault(false)
+                    runCatching {
+                        TagEmbedder.embedLyricInto(ctx, s, lrc, fileNameOverride = onlineFileName)
+                    }.getOrDefault(false)
                 }
             } else false
             withContext(Dispatchers.IO) { Store.saveCachedLyric(s, lrc) }
@@ -480,8 +498,8 @@ fun PlayerScreen(
             Toast.makeText(
                 ctx,
                 when {
-                    isLocal && embedded -> "校准歌词已嵌入文件，以后播放无需再调"
-                    isLocal -> "校准歌词已保存到缓存（嵌入文件失败）"
+                    hasLocalFile && embedded -> "校准歌词已嵌入文件，以后播放无需再调"
+                    hasLocalFile -> "校准歌词已保存到缓存（嵌入文件失败）"
                     else -> "校准歌词已保存"
                 },
                 Toast.LENGTH_SHORT
@@ -532,14 +550,50 @@ fun PlayerScreen(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                        text = current?.artistName ?: "—",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 1.dp)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = current?.artistName ?: "—",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .padding(top = 1.dp)
+                        )
+                        // v1.5.1 r31：取歌链路徽标常显——自定义源高亮主色，
+                        // 其余链路（GD API/本地/缓存）中性色。常显的价值：
+                        // 用户随时能看到当前歌走哪条链路；切策略/换歌后徽标
+                        // 变化直观可验证（之前只在 custom 时显示，其他情况
+                        // "没徽标"无法区分"走了 GD"还是"功能没生效"）
+                        val badge = when (resolveSource) {
+                            "custom" -> "自定义源"
+                            "api" -> "GD API"
+                            "local" -> "本地"
+                            "cache" -> "缓存"
+                            else -> null
+                        }
+                        if (badge != null) {
+                            val isCustom = resolveSource == "custom"
+                            Text(
+                                text = badge,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isCustom) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .padding(top = 1.dp)
+                                    .background(
+                                        if (isCustom) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.surfaceVariant,
+                                        MaterialTheme.shapes.extraSmall
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
                 }
                 // v1.4.14：更多菜单（收藏 / 加入歌单 / 下载），替代原队列按钮
                 val isFavorite = current != null && favorites.any { it.sameAs(current) }
@@ -630,7 +684,8 @@ fun PlayerScreen(
                                 onClick = {
                                     menuOpen = false
                                     if (tappingMode) {
-                                        // 打点进行中：一并退出并丢弃未保存打点
+                                        // v1.5.1 r24：打点已即时落盘，退出校准
+                                        // 不再丢数据——只收编辑态，数据在 Store
                                         tappingMode = false
                                         tappingMap = emptyMap()
                                         tappingLine = 0
@@ -783,7 +838,10 @@ fun PlayerScreen(
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
-                                    text = "唱到高亮句时点「打点」（第 ${tappingLine + 1}/${lyrics.size} 句）",
+                                    text = if (tappingMap.isNotEmpty())
+                                        "已打 ${tappingMap.size}/${lyrics.size} 句，唱到高亮句时点「打点」（第 ${tappingLine + 1} 句）"
+                                    else
+                                        "唱到高亮句时点「打点」（第 ${tappingLine + 1}/${lyrics.size} 句）",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary,
                                     maxLines = 1,
@@ -795,9 +853,12 @@ fun PlayerScreen(
                                 ) {
                                     CompactTextButton(onClick = {
                                         // 记录此刻播放位置为当前句开唱时刻，跳下一句
+                                        // v1.5.1 r24：即时落盘——中途退出/收起/切歌不丢
                                         if (tappingLine < lyrics.size) {
                                             tappingMap = tappingMap + (tappingLine to position)
                                             tappingLine++
+                                            song?.let { Store.saveLyricTimestamps(it, tappingMap) }
+                                            timestampsTick++
                                         }
                                     }) {
                                         Icon(
@@ -811,10 +872,13 @@ fun PlayerScreen(
                                     }
                                     CompactTextButton(onClick = {
                                         // 撤销：删掉最后一条打点，指针回退
+                                        // v1.5.1 r24：同步落盘（可撤销已保存的点）
                                         val lastIdx = tappingMap.keys.maxOrNull()
                                         if (lastIdx != null) {
                                             tappingMap = tappingMap - lastIdx
                                             tappingLine = lastIdx
+                                            song?.let { Store.saveLyricTimestamps(it, tappingMap) }
+                                            timestampsTick++
                                         }
                                     }) { Text("撤销", style = MaterialTheme.typography.labelMedium) }
                                     CompactTextButton(onClick = {
@@ -823,6 +887,7 @@ fun PlayerScreen(
                                     }) { Text("跳过", style = MaterialTheme.typography.labelMedium) }
                                     CompactTextButton(onClick = {
                                         // 完成：合并已有打点（跳过的句保留旧值）并保存退出
+                                        // v1.5.1 r24：打点已即时落盘，这里只收尾
                                         val merged = savedTimestamps + tappingMap
                                         song?.let { Store.saveLyricTimestamps(it, merged) }
                                         timestampsTick++
@@ -833,6 +898,8 @@ fun PlayerScreen(
                                         PlayerManager.releaseAutoAdvance()
                                     }) { Text("完成", style = MaterialTheme.typography.labelMedium) }
                                     // v1.4.25：退出打点（未保存打点丢弃）
+                                    // v1.5.1 r24：打点已即时落盘，退出不再丢数据——
+                                    // tappingMap 清空只是退出编辑态，数据在 Store 里
                                     CompactTextButton(onClick = {
                                         tappingMode = false
                                         tappingMap = emptyMap()
@@ -886,10 +953,15 @@ fun PlayerScreen(
                                         }
                                     }
                                     // v1.4.16：逐句打点入口（偏移救不了的歌词用这个）
+                                    // v1.5.1 r24：续打——已保存的打点装入工作区，
+                                    // 指针跳到第一个未打句，从断点继续而非从头再来
                                     CompactTextButton(onClick = {
                                         if (lyrics.isNotEmpty()) {
-                                            tappingMap = emptyMap()
-                                            tappingLine = 0
+                                            val existing = savedTimestamps
+                                            tappingMap = existing
+                                            tappingLine = (0 until lyrics.size)
+                                                .firstOrNull { !existing.containsKey(it) }
+                                                ?: (lyrics.size - 1) // 全打完：停最后一句可重打
                                             tappingMode = true
                                             // v1.4.58 第十一轮：打点进行中抑制自动切歌——
                                             // 歌曲播完停在原地等保存，保住未落盘的打点数据
@@ -1364,14 +1436,23 @@ private fun LyricEditorDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // 预填文本：有歌词按 LRC 行重建（保留时间轴）；无歌词给空
+    // 预填文本（v1.5.1 修复）：优先读磁盘缓存原文——用户上次保存的
+    // 原样回填（含无标签行，不被自动补时间标签）；缓存没有时（在线
+    // 歌词未缓存等场景）回退按解析行重建 LRC（保留时间轴）。
+    // 之前从解析行重建会把用户追加的无标签行自动补上时间标签，
+    // 与用户输入原文不一致，且旧版解析器会丢弃无标签行导致
+    // 「换行文本保存后消失」。
     val initialText = remember(song) {
-        if (lyrics.isEmpty()) ""
-        else lyrics.joinToString("\n") { line ->
-            val totalMs = (line.time * 1000).toLong()
-            "[%02d:%02d.%03d]".format(
-                totalMs / 60000, totalMs / 1000 % 60, totalMs % 1000
-            ) + line.text
+        val cached = song?.let { runCatching { Store.cachedLyric(it) }.getOrNull() }
+        when {
+            cached != null -> cached
+            lyrics.isEmpty() -> ""
+            else -> lyrics.joinToString("\n") { line ->
+                val totalMs = (line.time * 1000).toLong()
+                "[%02d:%02d.%03d]".format(
+                    totalMs / 60000, totalMs / 1000 % 60, totalMs % 1000
+                ) + line.text
+            }
         }
     }
     var text by remember(song) { mutableStateOf(initialText) }
@@ -1410,10 +1491,23 @@ private fun LyricEditorDialog(
                     val ctx = context.applicationContext
                     scope.launch {
                         val isLocal = LocalCoverExtractor.isLocalSong(s)
-                        val embedded = if (isLocal) {
+                        // v1.5.1 r45：在线下载存量歌（文件在 D_Music，id 非
+                        // local:）定位本地文件后同样强制嵌入——此前只认本地
+                        // 导入歌，编辑后的歌词只进 App 缓存不落文件
+                        var onlineFileName: String? = null
+                        if (!isLocal) {
+                            onlineFileName = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    com.solara.music.data.DownloadManager.findLocalFileAbsPath(ctx, s)
+                                }.getOrNull()?.let { java.io.File(it).name }
+                            }
+                        }
+                        val hasLocalFile = isLocal || onlineFileName != null
+                        val embedded = if (hasLocalFile) {
                             withContext(Dispatchers.IO) {
-                                runCatching { TagEmbedder.embedLyricInto(ctx, s, content) }
-                                    .getOrDefault(false)
+                                runCatching {
+                                    TagEmbedder.embedLyricInto(ctx, s, content, fileNameOverride = onlineFileName)
+                                }.getOrDefault(false)
                             }
                         } else false
                         withContext(Dispatchers.IO) { Store.saveCachedLyric(s, content) }
@@ -1423,8 +1517,8 @@ private fun LyricEditorDialog(
                         Toast.makeText(
                             ctx,
                             when {
-                                isLocal && embedded -> "歌词已保存并嵌入文件"
-                                isLocal -> "歌词已保存（嵌入文件失败）"
+                                hasLocalFile && embedded -> "歌词已保存并嵌入文件"
+                                hasLocalFile -> "歌词已保存（嵌入文件失败）"
                                 else -> "歌词已保存"
                             },
                             Toast.LENGTH_SHORT

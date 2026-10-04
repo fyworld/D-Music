@@ -23,6 +23,20 @@ object MusicApi {
 
     const val DEFAULT_BASE_URL = "https://music-api.gdstudio.xyz/api.php"
 
+    /**
+     * v1.5.1 r29：lx 平台源码 → GD API source 参数映射。
+     * 平台直连搜索（PlatformSearchApi）搜出的歌 source 是 kw/kg/tx/wy/mg，
+     * 调 GD API（歌词/封面/直链兜底）时需转成 GD 的源码。
+     */
+    fun toGdSource(source: String): String = when (source) {
+        "kw" -> "kuwo"
+        "kg" -> "kugou"
+        "tx" -> "tencent"
+        "wy" -> "netease"
+        "mg" -> "migu"
+        else -> source
+    }
+
     @Volatile
     var baseUrl: String = DEFAULT_BASE_URL
 
@@ -76,7 +90,7 @@ object MusicApi {
                 urlOf(
                     "types" to "url",
                     "id" to song.id,
-                    "source" to song.source,
+                    "source" to toGdSource(song.source),
                     "br" to br
                 )
             ).trim()
@@ -91,7 +105,7 @@ object MusicApi {
                 urlOf(
                     "types" to "lyric",
                     "id" to song.lyricId.ifBlank { song.id },
-                    "source" to song.source
+                    "source" to toGdSource(song.source)
                 )
             ).trim()
             JSONObject(body).optString("lyric")
@@ -109,7 +123,7 @@ object MusicApi {
                     urlOf(
                         "types" to "pic",
                         "id" to id,
-                        "source" to song.source,
+                        "source" to toGdSource(song.source),
                         "size" to "300"
                     )
                 ).trim()

@@ -226,7 +226,12 @@ object DownloadManager {
                 }
                 refreshDownloadNotification()
                 downloadSemaphore.withPermit {
-                    val url = MusicApi.resolveUrl(song, quality)
+                    // v1.5.1 r37：下载取直链与播放同策略——
+                    // ① 优先模式先自定义源脚本（此前只走 GD API，自定义源
+                    //   模式下非网易源下载必失败——r37-2 根因）
+                    // ② GD API 兜底（兜底模式先走这）
+                    // ③ 全失败自动换源（与播放 r37-4 同机制）
+                    val url = resolveDownloadUrl(song, quality)
                     if (url.isNullOrBlank()) {
                         fail(id, "无法解析直链（音源可能不支持该品质）")
                         return@withPermit
@@ -239,6 +244,34 @@ object DownloadManager {
                 jobs.remove(id)
             }
         }
+    }
+
+    /**
+     * v1.5.1 r37：下载直链解析（与 PlayerManager.playAt 同策略）。
+     * 优先模式：自定义源脚本 → GD API → 自动换源；
+     * 兜底模式：GD API → 自定义源脚本 → 自动换源。
+     */
+    private suspend fun resolveDownloadUrl(song: Song, quality: String): String? {
+        val preferred = com.solara.music.customsource.CustomSourceManager.isPreferred &&
+            com.solara.music.customsource.CustomSourceManager.sandboxReady
+        if (preferred) {
+            val fromScript = runCatching {
+                com.solara.music.customsource.CustomSourceManager.getMusicUrl(song.source, quality, song)
+            }.getOrNull()
+            if (!fromScript.isNullOrBlank()) return fromScript
+        }
+        val fromApi = runCatching { MusicApi.resolveUrl(song, quality) }.getOrNull()
+        if (!fromApi.isNullOrBlank()) return fromApi
+        if (!preferred) {
+            val fromScript = runCatching {
+                com.solara.music.customsource.CustomSourceManager.getMusicUrl(song.source, quality, song)
+            }.getOrNull()
+            if (!fromScript.isNullOrBlank()) return fromScript
+        }
+        // v1.5.1 r37：全链路失败——自动换源（全平台搜同名歌逐源试取直链）
+        return runCatching {
+            MusicSourceToggler.toggle(song, quality)?.url
+        }.getOrNull()
     }
 
     fun removeTask(id: String) {
@@ -577,6 +610,107 @@ object DownloadManager {
      * 按精确文件名查询 MediaStore，命中返回 content:// URI。
      * v1.4.2：不再限定 D_Music 目录——本地扫描的歌曲可能来自全库任意位置。
      */
+    /**
+     * v1.5.1 r42：定位歌曲本地文件的**绝对路径**（供伴生 .lrc 写入用）。
+     * 与 findLocalPlayableUri 同策略但返回 DATA 绝对路径（不返回 content Uri）：
+     * - 本地导入歌（id=local:xxx）：含路径 id 直查文件系统，纯文件名走 MediaStore
+     * - 在线下载歌：按「歌手 - 歌名.flac/mp3」在 D_Music 下 MediaStore 查
+     * 找不到返回 null。
+     */
+    fun findLocalFileAbsPath(context: Context, song: Song): String? {
+        val safe = fun(name: String) = name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        val ctx = context.applicationContext
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // 本地导入歌：id 含相对路径时文件系统直查
+            if (song.id.startsWith("local:")) {
+                val ref = song.id.removePrefix("local:")
+                if (ref.contains('/') && hasAllFilesAccess()) {
+                    val external = Environment.getExternalStorageDirectory()
+                    val f = File(external, ref)
+                    if (f.exists() && f.canRead()) return f.absolutePath
+                }
+                // 纯文件名：MediaStore 全库精确查（拿 DATA 列）
+                val fileName = ref.substringAfterLast('/')
+                val abs = queryDataByDisplayName(ctx, fileName)
+                if (abs != null) return abs
+                // .dts 等不收录格式：按浏览目录直查兜底
+                if (fileName.endsWith(".dts", true) && hasAllFilesAccess()) {
+                    val rel = Store.localBrowsePath.value
+                    if (!rel.isNullOrBlank()) {
+                        val external = Environment.getExternalStorageDirectory()
+                        val f = File(external, "${rel.trimStart('/')}/$fileName")
+                        if (f.exists() && f.canRead()) return f.absolutePath
+                    }
+                }
+                return null
+            }
+            // 在线下载歌：按下载命名规则在 D_Music 下查（优先 flac）
+            val selection =
+                "${MediaStore.Audio.Media.DATA} LIKE ? AND ${MediaStore.Audio.Media.DISPLAY_NAME} LIKE ?"
+            val pattern = (safe("${song.artistName} - ${song.displayName}."))
+                .replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            val found = mutableListOf<Pair<String, String>>()
+            ctx.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Audio.Media.DATA, MediaStore.Audio.Media.DISPLAY_NAME),
+                selection,
+                arrayOf("%/D_Music/%", pattern),
+                null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val data = c.getString(0) ?: continue
+                    val name = c.getString(1) ?: continue
+                    if (!name.endsWith(".mp3", true) && !name.endsWith(".flac", true)) continue
+                    found.add(data to name)
+                }
+            }
+            return found.firstOrNull { it.second.endsWith(".flac", true) }?.first
+                ?: found.firstOrNull { it.second.endsWith(".mp3", true) }?.first
+        } else {
+            // Android 9-：与 findLocalPlayableUri 同源目录
+            val dirs = mutableListOf(
+                File(ctx.getExternalFilesDir(Environment.DIRECTORY_MUSIC), "D_Music")
+            )
+            val candidates = buildList {
+                add("${Environment.DIRECTORY_MUSIC}/D_Music")
+                Store.scanFolder.value?.let { add(it) }
+            }
+            candidates.distinct().forEach { resolveScanRoot(it)?.let { d -> dirs.add(d) } }
+            for (dir in dirs) {
+                if (song.source == "local" && song.id.startsWith("local:")) {
+                    val ref = song.id.removePrefix("local:")
+                    if (ref.contains('/')) {
+                        val external = Environment.getExternalStorageDirectory()
+                        val f = external?.let { File(it, ref) }
+                        if (f != null && f.exists()) return f.absolutePath
+                    }
+                    val f = File(dir, ref.substringAfterLast('/'))
+                    if (f.exists()) return f.absolutePath
+                }
+                listOf("flac", "mp3").forEach { ext ->
+                    val f = File(dir, safe("${song.artistName} - ${song.displayName}.$ext"))
+                    if (f.exists()) return f.absolutePath
+                }
+            }
+            return null
+        }
+    }
+
+    /** v1.5.1 r42：按 DISPLAY_NAME 精确查 DATA 绝对路径。 */
+    private fun queryDataByDisplayName(context: Context, fileName: String): String? {
+        val selection = "${MediaStore.Audio.Media.DISPLAY_NAME}=?"
+        context.contentResolver.query(
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Audio.Media.DATA),
+            selection,
+            arrayOf(fileName),
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) return cursor.getString(0)
+        }
+        return null
+    }
+
     private fun queryByDisplayName(context: Context, fileName: String): String? {
         val selection = "${MediaStore.Audio.Media.DISPLAY_NAME}=?"
         context.contentResolver.query(
@@ -800,6 +934,21 @@ object DownloadManager {
      */
     fun songFromFileNamePublic(fileName: String, dirRel: String? = null): Song? =
         songFromFileName(fileName, dirRel)
+
+    /**
+     * v1.5.1 r38：本地歌 File 解析（供时长读取等元数据访问）。
+     * id 形如 "local:相对路径/文件名"（v1.4.58 起编入路径）或
+     * "local:文件名"（根目录）——文件系统直查；文件不存在/已移动返回
+     * null（调用方自行兜底）。需「所有文件访问」权限（文件夹浏览本身
+     * 就要它）。
+     */
+    fun localFileOf(song: Song): File? {
+        if (!song.id.startsWith("local:")) return null
+        if (!hasAllFilesAccess()) return null
+        val external = Environment.getExternalStorageDirectory() ?: return null
+        return File(external, song.id.removePrefix("local:"))
+            .takeIf { it.exists() && it.canRead() }
+    }
 
     /**
      * v1.4.58：重命名文件夹（仅支持有「所有文件访问」权限的文件系统路径）。
@@ -1191,9 +1340,20 @@ object DownloadManager {
 
         // 1) 封面字节 + 歌词文本（并行拉，失败为 null）
         // v1.4.25：封面 URL 优先走磁盘缓存（省一次 API 调用）
-        val coverUrl = Store.onlineCoverUrl(song) ?: MusicApi.fetchPicUrl(song)?.also {
-            Store.saveOnlineCoverUrl(song, it)
-        }
+        // v1.5.1 r35：平台直连源码（kw/kg/tx/wy/mg）——GD API 不支持这些源
+        // 的 pic/lyric 查询，先走自定义源脚本（与取歌同链路）
+        val isLxSource = song.source == "kw" || song.source == "kg" ||
+            song.source == "tx" || song.source == "wy" || song.source == "mg"
+        val coverUrl = Store.onlineCoverUrl(song)
+            ?: (if (isLxSource) runCatching {
+                // v1.5.1 r35：先平台官方接口，失败回落脚本
+                com.solara.music.data.PlatformMediaApi.fetchPicUrl(song)
+            }.getOrNull() ?: runCatching {
+                com.solara.music.customsource.CustomSourceManager.getPicUrl(song)
+            }.getOrNull() else null)
+            ?: MusicApi.fetchPicUrl(song)?.also {
+                Store.saveOnlineCoverUrl(song, it)
+            }
         val coverBytes: ByteArray? = coverUrl?.let { u ->
             runCatching {
                 client.newCall(Request.Builder().url(u).build()).execute().use { r ->
@@ -1201,7 +1361,13 @@ object DownloadManager {
                 }
             }.getOrNull()?.takeIf { it.isNotEmpty() }
         }
-        val lyric: String? = runCatching { MusicApi.fetchLyric(song) }.getOrNull()
+        val lyric: String? = (if (isLxSource) runCatching {
+            // v1.5.1 r35：先平台官方接口，失败回落脚本
+            com.solara.music.data.PlatformMediaApi.fetchLyric(song)
+        }.getOrNull() ?: runCatching {
+            com.solara.music.customsource.CustomSourceManager.getLyric(song)
+        }.getOrNull() else null)
+            ?: runCatching { MusicApi.fetchLyric(song) }.getOrNull()
         if (coverBytes == null && lyric == null) return
 
         val ctx = context.applicationContext
@@ -1220,6 +1386,25 @@ object DownloadManager {
                 ctx.contentResolver.openOutputStream(uri, "wt")?.use { out ->
                     tmpDst.inputStream().use { it.copyTo(out) }
                 }
+                // v1.5.1 r41：FLAC 歌词写伴生 .lrc——embed 的 FLAC 分支只嵌
+                // 封面（lyric 参数被丢弃），伴生文件由这里补写（与
+                // TagEmbedder.embedLyricInto 同策略）。DATA 列拿绝对路径，
+                // 有「所有文件访问」权限时直写；无权限时静默跳过
+                // （歌词已有 App 内缓存兜底，不影响播放页显示）
+                if (lyric != null && safeName.endsWith(".flac", ignoreCase = true)) {
+                    runCatching {
+                        val absPath = ctx.contentResolver.query(
+                            uri,
+                            arrayOf(MediaStore.Audio.Media.DATA),
+                            null, null, null
+                        )?.use { c ->
+                            if (c.moveToFirst()) c.getString(0) else null
+                        }
+                        if (!absPath.isNullOrBlank()) {
+                            TagEmbedder.writeSidecarLrc(absPath, lyric)
+                        }
+                    }
+                }
             } finally {
                 runCatching { tmpSrc.delete() }
                 runCatching { tmpDst.delete() }
@@ -1230,6 +1415,10 @@ object DownloadManager {
             val dst = File(dir, "dmusic_tmp_${System.currentTimeMillis()}")
             try {
                 TagEmbedder.embed(src, dst, safeName, song, coverBytes, lyric)
+                // v1.5.1 r41：FLAC 歌词写伴生 .lrc（同 10+ 分支）
+                if (lyric != null && safeName.endsWith(".flac", ignoreCase = true)) {
+                    runCatching { TagEmbedder.writeSidecarLrc(src.absolutePath, lyric) }
+                }
                 // 原子替换：嵌入版改名回原文件
                 if (dst.exists() && src.delete()) {
                     if (!dst.renameTo(src)) {

@@ -36,6 +36,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import com.solara.music.data.PlatformSearchApi
 import com.solara.music.data.Sources
 import com.solara.music.data.Store
 import com.solara.music.player.PlayerManager
@@ -103,8 +105,25 @@ fun SearchScreen(
     ) {
         Spacer(Modifier.height(12.dp))
         // v1.4.17：音源选择收进搜索框左侧——点源名弹下拉菜单切换，页面更干净
+        // v1.5.1 r29：自定义源优先+沙箱就绪时切换为「聚合+脚本支持的源」（平台直连搜索）；
+        // 否则保持源 A-D（GD音乐台聚合）
         var sourceMenuOpen by remember { mutableStateOf(false) }
-        val currentSourceLabel = Sources.all.firstOrNull { it.id == source }?.label ?: "源 A"
+        val platformMode = vm.platformMode
+        val platformSources = vm.platformSources
+        val effectivePlatformMode = platformMode && platformSources.isNotEmpty()
+        val sourceOptions: List<Pair<String, String>> = if (effectivePlatformMode) {
+            platformSources
+        } else {
+            Sources.all.map { it.id to it.label }
+        }
+        // 平台模式下当前源不在列表（如上次是源C/D）→ 自动切到聚合
+        val currentSourceLabel = sourceOptions.firstOrNull { it.first == source }?.second
+            ?: if (effectivePlatformMode) "聚合" else "源 A"
+        LaunchedEffect(effectivePlatformMode) {
+            if (effectivePlatformMode && source !in sourceOptions.map { it.first }) {
+                vm.changeSource(PlatformSearchApi.SRC_ALL)
+            }
+        }
         OutlinedTextField(
             value = query,
             onValueChange = vm::onQueryChange,
@@ -133,11 +152,11 @@ fun SearchScreen(
                         expanded = sourceMenuOpen,
                         onDismissRequest = { sourceMenuOpen = false }
                     ) {
-                        Sources.all.forEach { src ->
+                        sourceOptions.forEach { (srcId, srcLabel) ->
                             DropdownMenuItem(
-                                text = { Text(src.label) },
+                                text = { Text(srcLabel) },
                                 trailingIcon = {
-                                    if (src.id == source) {
+                                    if (srcId == source) {
                                         Icon(
                                             Icons.Filled.Check,
                                             contentDescription = null,
@@ -147,7 +166,7 @@ fun SearchScreen(
                                 },
                                 onClick = {
                                     sourceMenuOpen = false
-                                    vm.changeSource(src.id)
+                                    vm.changeSource(srcId)
                                 }
                             )
                         }

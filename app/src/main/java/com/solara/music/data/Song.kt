@@ -14,7 +14,15 @@ data class Song(
     val picId: String = "",
     val urlId: String = "",
     val lyricId: String = "",
-    val source: String = "netease"
+    val source: String = "netease",
+    // v1.5.1 r32：平台直连搜索补充的 lx-music 契约字段——自定义音源脚本
+    // 解析直链必需（kg 用 hash、tx 用 strMediaMid、mg 用 copyrightId）；
+    // GD API 搜出的歌这些字段为空（脚本侧用 songId 兜底，与 lx-music 旧结构一致）
+    val hash: String = "",
+    val strMediaMid: String = "",
+    val copyrightId: String = "",
+    val albumMid: String = "",
+    val interval: String = ""
 ) {
     val displayName: String get() = name.ifBlank { "未知曲目" }
     val artistName: String get() = cleanArtist(artist).ifBlank { "未知歌手" }

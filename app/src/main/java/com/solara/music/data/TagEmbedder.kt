@@ -44,10 +44,17 @@ object TagEmbedder {
      *   写回 URI（"wt" 模式整文件覆盖）
      * - Android 9-：专属目录直接 src→dst 重写后原子改名
      * 返回是否成功（失败不抛异常，调用方按需降级）。
+     * v1.5.1 r47：新增 [fileNameOverride]——在线下载存量歌（id 非 local:，
+     * localFileName 为空）定位到本地文件后传入文件名，走同款嵌入。
      */
-    fun embedCoverInto(context: Context, song: Song, cover: ByteArray?): Boolean {
+    fun embedCoverInto(
+        context: Context,
+        song: Song,
+        cover: ByteArray?,
+        fileNameOverride: String? = null
+    ): Boolean {
         if (cover == null || cover.isEmpty()) return false
-        val fileName = LocalCoverExtractor.localFileName(song)
+        val fileName = fileNameOverride ?: LocalCoverExtractor.localFileName(song)
         if (fileName.isEmpty()) return false
         val ctx = context.applicationContext
 
@@ -111,10 +118,20 @@ object TagEmbedder {
      * - MP3：ID3v2 USLT 帧写入（临时文件中转写回，同 embedCoverInto 模式）
      * - FLAC/其他：写同名 .lrc 伴生文件到歌曲所在目录
      * 返回是否成功（失败不抛异常；歌词已有缓存兜底，不影响显示）。
+     *
+     * v1.5.1 r43：新增 [fileNameOverride]——在线下载存量歌（id 非 local:，
+     * localFileName 为空）定位到本地文件后传入文件名，走同款嵌入。
+     * 写入均为**覆盖语义**（mp3agic 重写标签 / FileOutputStream 重写
+     * .lrc），「下载歌词」重复下载即覆盖。
      */
-    fun embedLyricInto(context: Context, song: Song, lrc: String): Boolean {
+    fun embedLyricInto(
+        context: Context,
+        song: Song,
+        lrc: String,
+        fileNameOverride: String? = null
+    ): Boolean {
         if (lrc.isBlank()) return false
-        val fileName = LocalCoverExtractor.localFileName(song)
+        val fileName = fileNameOverride ?: LocalCoverExtractor.localFileName(song)
         if (fileName.isEmpty()) return false
         val ctx = context.applicationContext
 
@@ -194,8 +211,10 @@ object TagEmbedder {
     /**
      * 写同名 .lrc 伴生文件（FLAC 等无法内嵌歌词的格式）。
      * [audioAbsPath] 音频绝对路径；.lrc 写到同目录同名。
+     * v1.5.1 r41：private → internal——下载完成链路（DownloadManager.embedTags）
+     * 对 FLAC 也写伴生 .lrc（embed 只嵌封面，lyric 参数在 FLAC 分支被丢弃）。
      */
-    private fun writeSidecarLrc(audioAbsPath: String, lrc: String): Boolean {
+    internal fun writeSidecarLrc(audioAbsPath: String, lrc: String): Boolean {
         if (audioAbsPath.isBlank()) return false
         return try {
             // 10+ 公共目录：经 MediaStore RELATIVE_PATH 写（insert 音频表会被扫描，

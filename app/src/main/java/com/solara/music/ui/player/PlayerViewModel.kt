@@ -38,6 +38,20 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     if (it > 0) refreshLyrics()
                 }
             }
+            // v1.5.1 r35：自定义源取歌完成后重取歌词——
+            // 歌词请求在 currentSong 变化时触发（点歌瞬间），但脚本歌词
+            // 依赖 extraCache（取歌时后端返回的 lrc），取歌未完成时缓存空。
+            // 取歌完成 → resolveSource 变 "custom" → 此时 extraCache 已填，
+            // 歌词仍空则重取（冷启动恢复队列场景：歌词请求早于取歌发生，
+            // 失败后 currentSong 不变 collect 不再触发，歌词永远空）
+            launch {
+                PlayerManager.resolveSource.collect { src ->
+                    if (src == "custom" && lyrics.value.isEmpty()) {
+                        val song = PlayerManager.currentSong.value ?: return@collect
+                        if (isPlatformSource(song.source)) refreshLyrics()
+                    }
+                }
+            }
             PlayerManager.currentSong.collect { song ->
                 if (song == null) {
                     lastKey = null
@@ -56,6 +70,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    /** v1.5.1 r35：是否平台直连源码（lx 五平台）。 */
+    private fun isPlatformSource(source: String): Boolean =
+        source == "kw" || source == "kg" || source == "tx" || source == "wy" || source == "mg"
 
     /**
      * v1.4.17：重新加载当前歌歌词（保存校准歌词后调用）。

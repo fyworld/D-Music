@@ -372,7 +372,21 @@ class PlaybackService : MediaSessionService() {
                 if (bitmap == null) {
                     repeat(3) { attempt ->
                         bitmap = runCatching {
+                            // v1.5.1 r35：平台直连源码（kw/kg/tx/wy/mg）——GD API
+                            // 不支持这些源的 pic 查询，先走自定义源脚本（与取歌同链路）
+                            val scriptUrl = if (song.source == "kw" || song.source == "kg" ||
+                                song.source == "tx" || song.source == "wy" || song.source == "mg"
+                            ) {
+                                // v1.5.1 r35：平台直连源码——先平台官方接口，失败回落脚本
+                                runCatching {
+                                    com.solara.music.data.PlatformMediaApi.fetchPicUrl(song)
+                                }.getOrNull()
+                                    ?: runCatching {
+                                        com.solara.music.customsource.CustomSourceManager.getPicUrl(song)
+                                    }.getOrNull()
+                            } else null
                             val url = com.solara.music.ui.components.CoverCache.get(cacheKey)
+                                ?: scriptUrl
                                 ?: com.solara.music.data.MusicApi.fetchPicUrl(song)?.also {
                                     com.solara.music.ui.components.CoverCache.put(cacheKey, it)
                                     Store.saveOnlineCoverUrl(song, it)

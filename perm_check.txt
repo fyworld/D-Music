@@ -1,0 +1,2 @@
+﻿Error: Unknown operation string: MANAGE_EXTERNAL_STORAGE
+Error: Unknown operation string: MANAGE_EXTERNAL_STORAGE
