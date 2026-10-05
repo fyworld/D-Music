@@ -548,6 +548,17 @@ fun SongRow(
  *   拖到最前/最后可见条目位置条目被钉住（完整可见），手指继续
  *   下探进入边缘区驱动列表滚动，条目持续换位但**永不出界**。
  *   与换位/滚动补偿自洽：clamp 界随 slot 平移同步移动。
+ * v1.5.1 r61 修「拖到最前条目消失」（所有拖动列表）：
+ *   LazyColumn 滚动锚定（updateScrollPositionIfTheFirstItemWasMoved，
+ *   r59b 同源）只跟踪第一可见项的 key——拖动条目与第一可见项换位
+ *   时，锚定把视口拉到原第一可见项的新 index（视口内容不变），拖动
+ *   条目被推到视口上方**不被组合**→ pointerInput 销毁 → 手势死亡 →
+ *   条目「跳到最前条目前面」看不到、列表不滚动。r60-3 给所有列表
+ *   补了稳定 key（修手势回收 bug）反而使锚定得以触发——两个 bug
+ *   此消彼长。修复 = 每次换位后立刻 scrollToItem 钉回换位前的视口
+ *   位置（见 pinViewportAfterSwap）：清除锚定 key，下一帧布局槽位
+ *   不变，checkSwap/autoScrollSwap 的 dragOffset 补偿公式假设
+ *   （换位后新槽 offset = target 原槽 offset）重新成立。
  */
 class DragReorderState(
     private val listState: LazyListState,
@@ -569,6 +580,14 @@ class DragReorderState(
      * 消除松手瞬间条目跳变。onStart 时 cancel（新拖动立即接管）。
      */
     private var settleJob: Job? = null
+
+    /**
+     * r61：换位后视口钉回协程。scrollToItem 是 suspend，需协程承载；
+     * 用 Main.immediate 保证在换位的同一主线程调用栈内同步执行完
+     * （先于下一帧 measure，锚定来不及拉走视口）。onStart/onEnd
+     * cancel 防泄漏（r57 ⑤ 教训：不受管理的换位协程是失控滚动源）。
+     */
+    private var pinJob: Job? = null
 
     /**
      * r57：落位中的条目下标（动画期间 graphicsLayer 仍应用
@@ -606,6 +625,9 @@ class DragReorderState(
         settleJob?.cancel()
         settleJob = null
         settleIndex = null
+        // r61：打断残留的视口钉回（r57 ⑤ 教训——换位协程必须受管理）
+        pinJob?.cancel()
+        pinJob = null
         draggingIndex = index
         dragOffset = 0f
         scrollAccum = 0f
@@ -657,6 +679,56 @@ class DragReorderState(
             System.nanoTime() - lastAutoScrollNanos < AUTO_SCROLL_ACTIVE_WINDOW_MS * 1_000_000L
 
     /**
+     * r61：换位后把视口钉回换位前的位置（对抗 LazyColumn 锚定）。
+     *
+     * 锚定机制（LazyListScrollPosition.updateScrollPositionIfTheFirstItemWasMoved）
+     * 只跟踪第一可见项的 key：换位使该 key 的 index 变化时，重组把
+     * firstVisibleItemIndex 拉到 key 的新 index——视口内容不变，但
+     * 拖动条目（换到第一可见项原 index）被推到视口上方不被组合 →
+     * 手势死亡（r61 BUG 根因）。
+     *
+     * 修复：onMove 数据搬移后**立刻** scrollToItem 钉回换位前的
+     * firstVisibleItemIndex/ScrollOffset。scrollToItem 内部
+     * requestPositionAndForgetLastKnownKey 清除锚定 key 记忆 →
+     * 下一帧按钉住的 position 布局 → 槽位不变 → 拖动条目落在第一
+     * 可见槽（完整可见）→ 补偿公式假设成立。
+     *
+     * Main.immediate 同步执行：在换位的同一调用栈内完成（先于帧
+     * 回调的 measure），锚定来不及触发。scrollToItem 无动画、
+     * scroll 通道无并发（checkSwap 在手势回调、autoScrollSwap 在
+     * 自身协程内串行调用，r56 两路径隔离），无竞态。
+     *
+     * ⚠ 不能用 r59b keepScrollAfterMove 的 scrollToItem(0)+scrollBy
+     * 两步法：scrollBy 会触发一次**旧数据测量**重新记录锚定 key，
+     * 随后新数据测量照样跳变（r59b 场景 delay(50) 先让跳变发生再
+     * 事后纠正；拖动中条目出视口即被回收、手势即死，必须事前阻止，
+     * scrollToItem 本身不触测量、无中间锚定记录）。
+     *
+     * offset 换算：visibleItemsInfo 的 offset 是视口坐标（滚动中
+     * ≤ 0），scrollToItem 的 scrollOffset 为正 = 条目顶部在视口
+     * 上方（正向滚动）——互为相反数。直接传视口坐标会方向反转
+     * （r59b「负 offset 规范化」坑即把两者混用）。firstOffset>0
+     * 仅出现在列表顶 contentPadding 未滚动区，scrollOffset=0 时
+     * 条目恰好落在 padding 位，取 0 即还原。
+     *
+     * ⚠ 不读 layoutInfo.visibleItemsInfo（那是**上一帧测量**结果）：
+     * autoScrollSwap 路径 scrollBy 刚发生、下一帧测量未完成，用它
+     * 钉回会撤销本次滚动、破坏边缘自动滚动。改读
+     * firstVisibleItemIndex/firstVisibleItemScrollOffset——滚动位置
+     * 的权威状态，scrollBy 同步更新，两条路径都实时；且语义与
+     * scrollToItem 参数完全一致（正值 = 条目顶部在视口上方），
+     * 无需符号换算。
+     */
+    private fun pinViewportAfterSwap() {
+        val firstIndex = listState.firstVisibleItemIndex
+        val scrollOffset = listState.firstVisibleItemScrollOffset
+        pinJob?.cancel()
+        pinJob = CoroutineScope(Dispatchers.Main.immediate).launch {
+            listState.scrollToItem(firstIndex, scrollOffset)
+        }
+    }
+
+    /**
      * 交换判定（手势拖动路径专用）。
      *
      * 视觉中心落在哪个可见条目上就与哪个交换（单步约束保持逐条
@@ -681,6 +753,9 @@ class DragReorderState(
         if (onMove(current, target)) {
             draggingIndex = target
             dragOffset = currInfo.offset + dragOffset - targetInfo.offset
+            // r61：钉回视口对抗锚定——否则换位涉及第一可见项时拖动
+            // 条目被推出视口（不被组合→手势死亡→条目消失）
+            pinViewportAfterSwap()
         }
     }
 
@@ -722,6 +797,11 @@ class DragReorderState(
             // 微抖触发 checkSwap 用漂移视觉错误换位 → 布局乱跳 →
             // 组件回收 → dragCancel
             dragOffset -= step * itemStride
+            // r61：向上滚动换位经过第一可见项时锚定同样拉走视口
+            // （scrollBy 后 lastKnownKey 未更新，换位使 key 移动 →
+            // 锚定把 firstVisibleItemIndex 拉到 key 新 index，视口
+            // 被拉走 2 格）——钉回保持槽位假设成立
+            pinViewportAfterSwap()
         }
     }
 
@@ -741,6 +821,10 @@ class DragReorderState(
         lastAutoScrollNanos = 0L
         autoScrollJob?.cancel()
         autoScrollJob = null
+        // r61：松手结束钉回协程（scrollToItem 已同步执行完，此处
+        // 只是兜底清理引用，防止泄漏）
+        pinJob?.cancel()
+        pinJob = null
         if (settlingIndex == null || settlingOffset == 0f) {
             dragOffset = 0f
             settleIndex = null
