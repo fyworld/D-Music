@@ -173,7 +173,13 @@ fun RecentScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(recent.size) { i ->
+                // r60-3：key = 稳定标识（r52 教训——无 key 时组件按位置
+                // 复用，换位后手势组件随滚动滚出视口被回收 → 手势静默
+                // 死亡 → 松手 onEnd 永不触发 → 自动滚动永不停止）
+                items(
+                    count = recent.size,
+                    key = { i -> recent[i].source + ":" + recent[i].id }
+                ) { i ->
                     val song = recent[i]
                     SongRow(
                         song = song,

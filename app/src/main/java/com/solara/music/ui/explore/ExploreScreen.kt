@@ -166,72 +166,82 @@ fun ExploreScreen(
                     EmptyState("点上面的雷达，开始探索未知音乐")
                 }
 
-                else -> LazyColumn(
-                    state = listState,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    item {
-                        if (select.active) {
-                            // v1.4.26：多选模式顶栏（收藏 / 加入歌单 / 下载 / 移除）
-                            SelectionTopBar(
-                                selectedCount = select.selected.size,
-                                totalCount = results.size,
-                                onExit = { select.exit() },
-                                onToggleSelectAll = {
-                                    if (select.selected.size >= results.size) {
-                                        select.clearSelection()
-                                    } else {
-                                        select.selectAll(results)
-                                    }
-                                },
-                                onFavorite = {
-                                    val added = Store.addFavorites(select.selectedSongs(results))
-                                    onShowMessage("已收藏 $added 首（重复自动跳过）")
-                                },
-                                onAddToPlaylist = {
-                                    if (select.selected.isNotEmpty()) showBatchPlaylist = true
-                                },
-                                onDelete = {
-                                    // 探索结果"删除"= 从结果列表移除（不动收藏）
-                                    val n = select.selected.size
-                                    vm.removeResults(select.selectedSongs(results))
+                else -> Column(Modifier.weight(1f).fillMaxWidth()) {
+                    // r60-2：栏目行固定在列表外（不随内容滚动）；
+                    // r60-1：栏目提出后 LazyColumn 纯歌曲行——dragReorder 的
+                    // 歌曲下标 i 即绝对下标，clampToViewport 不再错位一格
+                    // （此前条目可拖出列表底界、被播放控制栏遮挡）
+                    if (select.active) {
+                        // v1.4.26：多选模式顶栏（收藏 / 加入歌单 / 下载 / 移除）
+                        SelectionTopBar(
+                            selectedCount = select.selected.size,
+                            totalCount = results.size,
+                            onExit = { select.exit() },
+                            onToggleSelectAll = {
+                                if (select.selected.size >= results.size) {
                                     select.clearSelection()
-                                    onShowMessage("已从结果移除 $n 首")
+                                } else {
+                                    select.selectAll(results)
                                 }
-                            )
-                        } else {
-                            // v1.4.17：标题行 + 更多按钮（存为歌单/下载全部收进菜单）
-                            BatchActionBar(
-                                title = "本次新增（${results.size} 首）",
-                                onSaveToPlaylist = { showSavePlaylist = true },
-                                onDownloadAll = { showBatchDownload = true },
-                                onMultiSelect = { select.enter() }
-                            )
-                        }
-                    }
-                    items(results.size) { i ->
-                        val song = results[i]
-                        SongRow(
-                            song = song,
-                            isFavorite = favorites.any { it.sameAs(song) },
-                            isCurrent = currentSong?.sameAs(song) == true,
-                            onClick = {
-                                // v1.4.50：点击歌时卡片背景同步换成这首歌的封面
-                                vm.setBgFromSong(song)
-                                PlayerManager.setQueue(results, i)
                             },
-                            onToggleFavorite = { Store.toggleFavorite(song) },
-                            onAddToPlaylist = { onAddToPlaylist(song) },
-                            onRemove = { vm.removeResult(i) },
-                            onDownload = { onDownload(song) },
-                            selectionMode = select.active,
-                            selected = select.isSelected(song),
-                            onSelect = { select.toggle(song) },
-                            modifier = if (select.active) Modifier else Modifier.dragReorder(dragState, i)
+                            onFavorite = {
+                                val added = Store.addFavorites(select.selectedSongs(results))
+                                onShowMessage("已收藏 $added 首（重复自动跳过）")
+                            },
+                            onAddToPlaylist = {
+                                if (select.selected.isNotEmpty()) showBatchPlaylist = true
+                            },
+                            onDelete = {
+                                // 探索结果"删除"= 从结果列表移除（不动收藏）
+                                val n = select.selected.size
+                                vm.removeResults(select.selectedSongs(results))
+                                select.clearSelection()
+                                onShowMessage("已从结果移除 $n 首")
+                            }
+                        )
+                    } else {
+                        // v1.4.17：标题行 + 更多按钮（存为歌单/下载全部收进菜单）
+                        BatchActionBar(
+                            title = "本次新增（${results.size} 首）",
+                            onSaveToPlaylist = { showSavePlaylist = true },
+                            onDownloadAll = { showBatchDownload = true },
+                            onMultiSelect = { select.enter() }
                         )
                     }
-                    item { Spacer(Modifier.height(8.dp)) }
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // r60-3：key = 稳定标识（r52 教训——无 key 时组件按位置
+                        // 复用，换位后手势组件随滚动滚出视口被回收 → 手势静默
+                        // 死亡 → 松手 onEnd 永不触发 → 自动滚动永不停止）
+                        items(
+                            count = results.size,
+                            key = { i -> results[i].source + ":" + results[i].id }
+                        ) { i ->
+                            val song = results[i]
+                            SongRow(
+                                song = song,
+                                isFavorite = favorites.any { it.sameAs(song) },
+                                isCurrent = currentSong?.sameAs(song) == true,
+                                onClick = {
+                                    // v1.4.50：点击歌时卡片背景同步换成这首歌的封面
+                                    vm.setBgFromSong(song)
+                                    PlayerManager.setQueue(results, i)
+                                },
+                                onToggleFavorite = { Store.toggleFavorite(song) },
+                                onAddToPlaylist = { onAddToPlaylist(song) },
+                                onRemove = { vm.removeResult(i) },
+                                onDownload = { onDownload(song) },
+                                selectionMode = select.active,
+                                selected = select.isSelected(song),
+                                onSelect = { select.toggle(song) },
+                                modifier = if (select.active) Modifier else Modifier.dragReorder(dragState, i)
+                            )
+                        }
+                        item { Spacer(Modifier.height(8.dp)) }
+                    }
                 }
             }
         }
