@@ -31,7 +31,7 @@ import java.net.URLEncoder
  * - mg 歌词: c.musicapp.migu.cn resourceinfo（resourceId=songId）→ lrcUrl 直取
  * - mg 封面: 同 resourceinfo（albumImgs 数组 imgSizeType 03）
  *
- * 接口来源：lx-music-mobile src/utils/musicSdk（GPL-3.0，接口 URL 与
+ * 接口来源：lx-music-mobile src/utils/musicSdk（Apache-2.0，接口 URL 与
  * 请求参数为公开的平台官方接口，实现为独立重写）。
  */
 object PlatformMediaApi {
