@@ -49,12 +49,14 @@ fun UpdateDialog(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(Modifier.height(8.dp))
-                // v1.5.1 r70k：lite 跨包升级说明（v1.6.0 起单版本，lite 回落 full）
+                // v1.5.1 r70k：lite 跨包升级说明（v1.6.0 起单版本，lite 回落 full）。
+                // 数据自动恢复：备份在公共目录 Music/D_Music_Backup（卸载重装恢复机制），
+                // full 首启自动导入收藏/歌单/队列；已下载音乐在 Music/D_Music 直接可扫。
                 if (info.crossUpgrade) {
                     Text(
-                        text = "从本版本起应用合并为单一版本。安装后为全新应用（与当前版本共存），" +
-                            "收藏、歌单等数据不随包名迁移；已下载的音乐在公共目录 Music/D_Music，" +
-                            "新版本可直接扫描使用。确认无误后可卸载当前版本。",
+                        text = "从本版本起应用合并为单一版本。安装后首次打开将自动恢复收藏、" +
+                            "歌单与播放队列，已下载的音乐可直接扫描使用。确认新版正常后，" +
+                            "可卸载当前版本。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.tertiary
                     )
