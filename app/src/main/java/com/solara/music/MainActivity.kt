@@ -39,6 +39,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * v1.5.1 r70n：Android 9- 存储权限（legacy 备份读写公共 Downloads 必需）。
+     * 此前 Android 9 分支直接 return 不申请任何权限，而 READ/WRITE_EXTERNAL_STORAGE
+     * 是 dangerous 权限必须运行时申请——导致备份写不出去、恢复也读不到，
+     * 「卸载重装恢复」在 Android 9 上双向静默失败。READ 与 WRITE 同组
+     * （STORAGE），一并申请，授予即全组生效。
+     */
+    private val storagePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants.values.any { it }) {
+            if (Store.retryRestoreAfterPermission()) {
+                PlayerManager.restoreQueueIfEmpty()
+            }
+        }
+    }
+
     /** 通知栏"停止"按钮：结束所有 Activity，退出 App。 */
     private val exitReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -134,7 +151,24 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.READ_MEDIA_AUDIO
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
                 Manifest.permission.READ_EXTERNAL_STORAGE
-            else -> return // Android 9-：app 专属目录无需权限
+            else -> {
+                // v1.5.1 r70n：Android 9- 申请存储组权限（legacy 备份读写
+                // 公共 Downloads 必需）。此前直接 return 不申请，备份/恢复
+                // 双向静默失败。READ 与 WRITE 同属 STORAGE 组，授予即全组生效。
+                val readGranted = checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                    PackageManager.PERMISSION_GRANTED
+                val writeGranted = checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                    PackageManager.PERMISSION_GRANTED
+                if (!readGranted || !writeGranted) {
+                    storagePermissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.READ_EXTERNAL_STORAGE,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        )
+                    )
+                }
+                return
+            }
         }
         val granted = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
         if (!granted) {
