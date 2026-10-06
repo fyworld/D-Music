@@ -184,6 +184,30 @@ fun SettingsScreen() {
                 }
             }
             Spacer(Modifier.height(12.dp))
+            // v1.5.1 r67：界面缩放五级——系统字体调大导致界面不协调时，
+            // App 内整体缩放（dp/sp 同比例：字体、图标、封面统一变化）适配。
+            // Density 覆盖实现，切换即时生效；「标准」= 系统默认行为。
+            Text(
+                text = "界面大小",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("更小", "小", "标准", "大", "更大").forEachIndexed { i, label ->
+                    FilterChip(
+                        selected = settings.uiScaleLevel == i,
+                        onClick = { Store.updateSettings { it.copy(uiScaleLevel = i) } },
+                        label = { Text(label) }
+                    )
+                }
+            }
+            Text(
+                text = "系统字体大小变化导致界面不协调时，可在此整体调整（含图标与封面）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            Spacer(Modifier.height(12.dp))
             // v1.4.15：主题色选择始终显示（原动态取色开启时隐藏，用户找不到）
             // v1.4.13 #64：六色板
             Text(

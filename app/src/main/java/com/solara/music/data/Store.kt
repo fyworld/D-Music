@@ -44,7 +44,14 @@ data class AppSettings(
      * 仅 App 内生效（不碰系统音量/全局效果）。单声道耳机/蓝牙单耳、
      * 某些歌只录了一个声道的场景实用。
      */
-    val channelBalance: Float = 0.5f
+    val channelBalance: Float = 0.5f,
+    /**
+     * 界面缩放级别（v1.5.1 r67）：0=更小 1=小 2=标准 3=大 4=更大，
+     * 对应 Density 缩放系数 0.8/0.9/1.0/1.1/1.2。作用于 Compose 根部
+     * LocalDensity——dp 与 sp 同比例缩放，字体/图标/封面统一变化。
+     * 用途：系统字体调大导致界面不协调时，App 内单独整体缩放适配。
+     */
+    val uiScaleLevel: Int = 2
 )
 
 /**
@@ -1217,7 +1224,8 @@ object Store {
             ),
             channelBalance = runCatching {
                 o.optDouble("channelBalance", 0.5).toFloat().coerceIn(0f, 1f)
-            }.getOrDefault(0.5f)
+            }.getOrDefault(0.5f),
+            uiScaleLevel = o.optInt("uiScaleLevel", 2).coerceIn(0, 4)
         )
     }.getOrDefault(AppSettings())
 
@@ -1240,6 +1248,7 @@ object Store {
         put("accentColor", s.accentColor)
         put("playbackCacheLimitBytes", s.playbackCacheLimitBytes)
         put("channelBalance", s.channelBalance.toDouble())
+        put("uiScaleLevel", s.uiScaleLevel)
     }.toString()
 
     private fun songToJson(s: Song): JSONObject = JSONObject().apply {

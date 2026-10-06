@@ -78,7 +78,8 @@ class MainActivity : ComponentActivity() {
             SolaraTheme(
                 darkTheme = darkTheme,
                 dynamicColor = settings.dynamicColor,
-                accentColor = settings.accentColor
+                accentColor = settings.accentColor,
+                uiScaleLevel = settings.uiScaleLevel
             ) {
                 SolaraApp()
             }

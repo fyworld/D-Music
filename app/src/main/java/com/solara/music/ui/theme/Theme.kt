@@ -8,8 +8,11 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 
 /**
  * 按主题色板构建明/暗 ColorScheme（v1.4.13 #64）。
@@ -65,11 +68,18 @@ private fun darkScheme(a: AccentPalette) = darkColorScheme(
 private val LightColors = lightScheme(AccentPalettes.mint)
 private val DarkColors = darkScheme(AccentPalettes.mint)
 
+/**
+ * 界面缩放级别 → Density 系数（v1.5.1 r67）。
+ * 0=更小 1=小 2=标准 3=大 4=更大。
+ */
+val UiScaleFactors = floatArrayOf(0.8f, 0.9f, 1.0f, 1.1f, 1.2f)
+
 @Composable
 fun SolaraTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = false,
     accentColor: String = "mint",
+    uiScaleLevel: Int = 2,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -81,9 +91,19 @@ fun SolaraTheme(
         darkTheme -> darkScheme(AccentPalettes.of(accentColor))
         else -> lightScheme(AccentPalettes.of(accentColor))
     }
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = SolaraTypography,
-        content = content
-    )
+    // v1.5.1 r67：界面整体缩放——覆盖 LocalDensity 的 density 部分
+    // （dp 与 sp 同比例缩放：字体、图标、封面统一变大/变小）；
+    // fontScale 保持系统值（标准级 = 系统默认行为，选小可抵消系统大字体）。
+    // StateFlow 驱动 → 切换即时生效，无需重启 Activity。
+    val base = LocalDensity.current
+    val factor = UiScaleFactors[uiScaleLevel.coerceIn(0, 4)]
+    val scaled = if (factor == 1.0f) base
+    else Density(base.density * factor, base.fontScale)
+    CompositionLocalProvider(LocalDensity provides scaled) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = SolaraTypography,
+            content = content
+        )
+    }
 }
