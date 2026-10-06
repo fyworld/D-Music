@@ -994,10 +994,10 @@ object PlayerManager {
         return r
     }
 
-    /** v1.5.1 r37：源码 → 显示名（换源提示用）。 */
+    /** v1.5.1 r37：源码 → 显示名（换源提示用）。r70：改为通用代号（源 1-5），lx 源码与 GD 源码统一映射。 */
     private fun sourceLabel(source: String): String = when (source) {
-        "kw" -> "酷我"; "kg" -> "酷狗"; "tx" -> "QQ"; "wy" -> "网易"; "mg" -> "咪咕"
-        "netease" -> "网易"; "tencent" -> "QQ"; "kuwo" -> "酷我"; "kugou" -> "酷狗"; "migu" -> "咪咕"
+        "kw", "kuwo" -> "源 1"; "kg", "kugou" -> "源 2"; "tx", "tencent" -> "源 3"
+        "wy", "netease" -> "源 4"; "mg", "migu" -> "源 5"
         else -> source
     }
 

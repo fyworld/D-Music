@@ -235,8 +235,9 @@ fun AboutScreen(onBack: () -> Unit) {
         ) {
             Text(
                 text = "由 Dong 一个厌烦音乐平台“广告弹窗、音质垃圾、音乐收费”，" +
-                    "喜欢“共享、免费，高品质音乐”的老登音乐爱好者，" +
-                    "基于开源项目 Solara 开发的极简音乐播放器。",
+                    "喜欢“共享、免费，高品质音乐”的老登音乐爱好者开发的极简音乐播放器。" +
+                    "项目初期参考了 Solara 的产品设计，后经完全重写与大量原创功能演进；" +
+                    "自定义音源功能借鉴了 lx-music 的脚本生态设计。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -283,9 +284,9 @@ fun AboutScreen(onBack: () -> Unit) {
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            DisclaimerItem("本软件不提供、不存储、不分发任何音乐文件，音频内容来自第三方免费聚合 API。")
+            DisclaimerItem("本软件不提供、不存储、不分发任何音乐文件，音频内容来自第三方免费聚合 API 与用户自行导入的自定义音源。")
             DisclaimerItem("音乐版权归原权利人所有，本软件仅供个人学习交流使用，禁止任何商业用途。")
-            DisclaimerItem("本软件基于开源项目 Solara 重构，继承 CC BY-NC-SA 4.0 协议。")
+            DisclaimerItem("本软件为独立开发项目，设计上参考了 Solara 与 lx-music，以 CC BY-NC-SA 4.0 协议开源。")
             DisclaimerItem("本软件按\u201c原样\u201d提供，不提供任何明示或暗示的保证，使用产生的一切法律责任由用户自行承担。")
             DisclaimerItem("版权投诉请通过 GitHub Issues 提交。")
         }
@@ -434,8 +435,8 @@ private fun DonateSheet(onDismiss: () -> Unit) {
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                text = "D Music 是一个个人维护的开源项目，基于 Solara（网页版）重构开发，" +
-                    "遵循 CC BY-NC-SA 4.0 协议，永久免费、无广告、无内购。",
+                text = "D Music 是一个个人维护的开源项目，设计上参考了 Solara 与 lx-music，" +
+                    "以 CC BY-NC-SA 4.0 协议开源，永久免费、无广告、无内购。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

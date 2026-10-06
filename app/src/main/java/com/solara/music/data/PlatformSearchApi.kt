@@ -47,10 +47,10 @@ object PlatformSearchApi {
     const val SRC_WY = "wy"
     const val SRC_MG = "mg"
 
-    /** 平台显示名（搜索页 tab 用）。 */
+    /** 平台显示名（搜索页 tab 用）。v1.5.1 r70：改为通用代号（源 1-5），与 GD 源 A-D 风格统一。 */
     val sourceNames = mapOf(
-        SRC_KW to "酷我", SRC_KG to "酷狗", SRC_TX to "QQ",
-        SRC_WY to "网易", SRC_MG to "咪咕"
+        SRC_KW to "源 1", SRC_KG to "源 2", SRC_TX to "源 3",
+        SRC_WY to "源 4", SRC_MG to "源 5"
     )
 
     /** D Music 源码 → lx 平台码映射（与 CustomSourceManager 一致）。 */

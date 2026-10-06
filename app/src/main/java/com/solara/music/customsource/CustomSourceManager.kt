@@ -379,9 +379,9 @@ object CustomSourceManager {
             .put("img", "")
     }
 
-    /** lx 源码 → 中文名（测试结果展示用）。 */
+    /** lx 源码 → 显示名（测试结果展示用）。r70：改为通用代号（源 1-5）。 */
     private fun sourceName(lx: String): String = when (lx) {
-        "kw" -> "酷我"; "kg" -> "酷狗"; "tx" -> "腾讯"; "wy" -> "网易云"; "mg" -> "咪咕"
+        "kw" -> "源 1"; "kg" -> "源 2"; "tx" -> "源 3"; "wy" -> "源 4"; "mg" -> "源 5"
         else -> lx
     }
 
