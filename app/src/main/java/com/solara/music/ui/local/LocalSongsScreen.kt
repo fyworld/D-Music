@@ -158,17 +158,27 @@ fun LocalSongsScreen(
     // 会过期——currentPath/content/orderVersion 是委托变量（捕获
     // State 本体）读的永远是现值；歌曲列表在 lambda 内从 Store
     // 重算（顺序表刚写入，读必是新序）
-    val dragState = rememberDragReorderState(listState) { from, to ->
-        val dirKeyNow = currentPath ?: ""
-        val folderCountNow = content?.folders?.size ?: 0
-        val songsNow = content?.let { Store.applyLocalSongOrder(dirKeyNow, it.songs) }
-            ?: emptyList()
-        val ok = Store.moveLocalSong(
-            dirKeyNow, from - folderCountNow, to - folderCountNow, songsNow
-        )
-        if (ok) orderVersion++
-        ok
-    }
+    // r63d：dragRange 排除头部文件夹区 + 尾部 Spacer——拖到顶/底
+    // targetIndex 落进非歌曲条目会让 onMove 越界失败 → 视觉回弹
+    val dragState = rememberDragReorderState(
+        listState,
+        onMove = { from, to ->
+            val dirKeyNow = currentPath ?: ""
+            val folderCountNow = content?.folders?.size ?: 0
+            val songsNow = content?.let { Store.applyLocalSongOrder(dirKeyNow, it.songs) }
+                ?: emptyList()
+            val ok = Store.moveLocalSong(
+                dirKeyNow, from - folderCountNow, to - folderCountNow, songsNow
+            )
+            if (ok) orderVersion++
+            ok
+        },
+        dragRange = {
+            val fc = content?.folders?.size ?: 0
+            val n = content?.let { Store.applyLocalSongOrder(currentPath ?: "", it.songs) }?.size ?: 0
+            fc until fc + n
+        }
+    )
 
     // r59：换目录重置滚动——listState 提升到页面级后跨目录存活
     // （loading 分支销毁 LazyColumn 也不再销毁 state），不重置会

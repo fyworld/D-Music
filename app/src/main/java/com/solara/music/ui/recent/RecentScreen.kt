@@ -70,9 +70,13 @@ fun RecentScreen(
     var showBatchPlaylist by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
 
-    val dragState = rememberDragReorderState(listState) { from, to ->
-        Store.moveRecent(from, to)
-    }
+    val dragState = rememberDragReorderState(
+        listState,
+        onMove = { from, to -> Store.moveRecent(from, to) },
+        // r63d：排除尾部 Spacer——拖到底 targetIndex 落在 Spacer 下标
+        // 会让 onMove 越界失败 → 视觉回弹
+        dragRange = { 0 until recent.size }
+    )
 
     // v1.4.26：多选模式下按系统返回键 = 退出多选（而不是退出 App）
     androidx.activity.compose.BackHandler(enabled = select.active) {

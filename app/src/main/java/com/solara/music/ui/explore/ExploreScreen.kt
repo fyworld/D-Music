@@ -88,9 +88,12 @@ fun ExploreScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
-    val dragState = rememberDragReorderState(listState) { from, to ->
-        vm.moveResult(from, to)
-    }
+    val dragState = rememberDragReorderState(
+        listState,
+        onMove = { from, to -> vm.moveResult(from, to) },
+        // r63d：排除尾部 Spacer（拖到底越界回弹）
+        dragRange = { 0 until results.size }
+    )
 
     // v1.4.26：多选模式下按系统返回键 = 退出多选（而不是退出 App）
     androidx.activity.compose.BackHandler(enabled = select.active) {

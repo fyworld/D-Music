@@ -77,9 +77,12 @@ fun PlaylistsScreen(
     val currentSong by PlayerManager.currentSong.collectAsState()
     // v1.5.1 r49：歌单列表拖动排序（含边缘自动滚动）
     val listState = rememberLazyListState()
-    val dragState = rememberDragReorderState(listState) { from, to ->
-        Store.movePlaylist(from, to)
-    }
+    val dragState = rememberDragReorderState(
+        listState,
+        onMove = { from, to -> Store.movePlaylist(from, to) },
+        // r63d：排除尾部 Spacer（拖到底越界回弹）
+        dragRange = { 0 until playlists.size }
+    )
 
     val open = playlists.firstOrNull { it.id == openPlaylistId }
     // v1.4.58：详情页打开时拦截系统返回键 = 返回歌单列表
@@ -252,9 +255,12 @@ private fun PlaylistDetailScreen(
     var showBatchPlaylist by remember { mutableStateOf(false) }
     var showBatchRemoveConfirm by remember { mutableStateOf(false) }
 
-    val dragState = rememberDragReorderState(listState) { from, to ->
-        Store.movePlaylistSong(playlist.id, from, to)
-    }
+    val dragState = rememberDragReorderState(
+        listState,
+        onMove = { from, to -> Store.movePlaylistSong(playlist.id, from, to) },
+        // r63d：排除尾部 Spacer（拖到底越界回弹）
+        dragRange = { 0 until playlist.songs.size }
+    )
 
     // v1.4.26：多选模式下按系统返回键 = 退出多选（而不是退出 App）
     androidx.activity.compose.BackHandler(enabled = select.active) {

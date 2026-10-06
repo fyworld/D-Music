@@ -598,7 +598,19 @@ class DragReorderState(
      *  Animatable.animateTo 必须在帧时钟上下文里跑（r62 崩溃修复：
      *  裸 CoroutineScope(Dispatchers.Main) 无帧时钟 →
      *  IllegalStateException: A MonotonicFrameClock is not available）。 */
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    /**
+     * r63d：可拖动条目区间（含端点）——让位判定/targetIndex 只在此
+     * 区间内计数。默认 null = [0, totalItemsCount)（含尾部 Spacer，
+     * r62 行为）。各页应显式传入排除非歌曲条目：
+     * - 普通页（歌曲 + 尾部 Spacer）：0 until count——否则拖到底
+     *   targetIndex 落在 Spacer 下标 → onMove 越界失败 → 视觉回弹；
+     * - 本地歌曲页（头部文件夹 + 歌曲 + 尾部 Spacer）：
+     *   folderCount until folderCount+songs——否则拖到顶 targetIndex
+     *   落进文件夹区，同样越界回弹。
+     * lambda 每次调用现读（页面数据是 State 委托，捕获不过期）。
+     */
+    private val dragRange: (() -> IntRange)? = null
 ) {
     /** 拖动中的条目原下标（数据不动，此值拖动全程不变）。 */
     var draggingIndex by mutableStateOf<Int?>(null)
@@ -628,13 +640,23 @@ class DragReorderState(
     /** 条目步长（含间距），onStart 时取。 */
     private var itemStride = 136f
 
-    /** 拖动条目原布局中心 Y（视口坐标）。 */
-    private var dragBaseCenterY = 0f
+    /** 拖动条目行高（不含间距），onStart 时取——r63d 视口 clamp 基准。 */
+    private var itemSize = 128f
+
+    /** 拖动条目原布局 top（视口坐标快照）——r63d 视口 clamp 基准。 */
+    private var dragBaseTopY = 0f
+
+    /** 累积自动滚动量（scrollBy 实际值之和）——dragOffset 含此补偿，
+     *  手势位移 = dragOffset - scrollAccum（clamp 作用在手势位移上）。 */
+    private var scrollAccum = 0f
 
     /** 让位映射：条目下标 → 让位动画（0 → ±stride）。 */
     private val shifts = mutableMapOf<Int, Animatable<Float, AnimationVector1D>>()
 
-    private val visualCenterY: Float get() = dragBaseCenterY + dragOffset
+    /** r63d：提交后让位条目的平移补偿（新下标 → ±stride）。提交后
+     *  布局槽位平移了一个 stride，translation 加回补偿量才视觉连续
+     *  （Animatable 继续原 tween 趋向 ±stride，加补偿后恰好归零）。 */
+    private val settleAdjust = mutableMapOf<Int, Float>()
 
     fun onStart(index: Int, yInItem: Float) {
         settleJob?.cancel()
@@ -644,10 +666,12 @@ class DragReorderState(
         draggingIndex = index
         targetIndex = index
         dragOffset = 0f
+        scrollAccum = 0f
         val info = listState.layoutInfo.visibleItemsInfo
             .firstOrNull { it.index == index } ?: return
         pointerY = info.offset + yInItem
-        dragBaseCenterY = info.offset + info.size / 2f
+        dragBaseTopY = info.offset.toFloat()
+        itemSize = info.size.toFloat()
         val infos = listState.layoutInfo.visibleItemsInfo.sortedBy { it.index }
         val self = infos.indexOfFirst { it.index == index }
         if (self in 0 until infos.size - 1) {
@@ -655,32 +679,56 @@ class DragReorderState(
         }
     }
 
+    /**
+     * 手势位移（不含自动滚动补偿）——r63d 视口 clamp 判定用。
+     * dragOffset = 手势位移 + scrollAccum（滚动补偿让条目视觉跟手）。
+     * 拖动条目屏幕视觉 top = dragBaseTopY + gestureOffset（滚动补偿
+     * 与 base 随视口的移动相互抵消）——clamp 作用在 gesture 上即
+     * 条目屏幕位置 clamp 在视口内，且界不随滚动变化。
+     */
+    private val gestureOffset: Float get() = dragOffset - scrollAccum
+
     fun onDrag(delta: Float) {
         if (draggingIndex == null) return
-        dragOffset += delta
+        // r63d：视口边界 clamp——拖动条目整体限制在可视区域内
+        //（上界=列表区顶部，下界=视口底=播放栏顶）。拖到边界顶住，
+        // 手指继续下探进入边缘区驱动列表滚动，条目持续换位但永不出界。
+        // clamp 只作用于视觉位移（dragOffset），pointerY 始终跟手指
+        // 真实位置（否则 clamp 顶住后 pointerY 冻结在边缘区外，
+        // 自动滚动失效——r63 问题2 根因）。
+        val viewportH = listState.layoutInfo.viewportSize.height.toFloat()
+        val minGesture = -dragBaseTopY
+        val maxGesture = viewportH - dragBaseTopY - itemSize
+        val newGesture = (gestureOffset + delta).coerceIn(minGesture, maxGesture)
+        dragOffset += newGesture - gestureOffset
         pointerY = pointerY?.plus(delta)
         updateShifts()
     }
 
     /**
-     * 让位判定（r62e：几何推算版，不依赖可见性）。
-     * 条目 i 的原中心 = dragBaseCenterY + (i - d) * itemStride（等差
-     * 推算）——视口外条目同样可判定（自动滚动把条目滚出视口后，
-     * 可见性判定会漏计数导致 targetIndex 偏差）。
-     * 统一式：i 让位 ⟺ (dragOffset - (i-d)*stride) 与 (i-d) 同号
-     * （拖动位移越过 i 的原中心）。
-     * targetIndex = d - shiftDown（上方让位数）+ shiftUp（下方让位数）。
+     * 让位判定（r63d：dragOffset 基准 + 非严格不等式）。
+     * 判定量 = dragOffset（含滚动补偿）：i 的布局位置随滚动移动，
+     * dragOffset 的补偿分量与 base 随视口的移动相互抵消——
+     * dragOffset - (i-d)*stride 恒等于「拖动条目中心与 i 原中心的
+     * 屏幕真实距离」。自动滚动时这个距离持续变化（i 们移动、条目
+     * 顶在视口边界），让位状态随滚动持续更新——插入位置才会
+     * 持续变化（r63 用 gestureOffset 判定在顶住后冻结，是误判）。
+     * 统一式：i 让位 ⟺ (dragOffset - (i-d)*stride) 与 (i-d) 同号。
+     * **必须 ≥（非严格）**：滚到头时拖动条目中心与首/末行中心恰好
+     * 相等（临界）——严格 > 会差一行（拖到底松手变倒数第二）。
+     * targetIndex = d - shiftDown + shiftUp。
      */
     private fun updateShifts() {
         val d = draggingIndex ?: return
-        val total = listState.layoutInfo.totalItemsCount
-        val vc = visualCenterY
+        val range = dragRange?.invoke()
+            ?: (0 until listState.layoutInfo.totalItemsCount)
+        val g = dragOffset
         var shiftDown = 0
         var shiftUp = 0
-        for (i in 0 until total) {
+        for (i in range) {
             if (i == d) continue
             val rel = i - d
-            val shouldShift = (dragOffset - rel * itemStride) * rel > 0f
+            val shouldShift = (g - rel * itemStride) * rel >= 0f
             if (shouldShift && !shifts.containsKey(i)) {
                 val dir = if (rel < 0) 1 else -1
                 val anim = Animatable(0f)
@@ -700,7 +748,7 @@ class DragReorderState(
                 if (rel < 0) shiftDown++ else shiftUp++
             }
         }
-        targetIndex = (d - shiftDown + shiftUp).coerceIn(0, (total - 1).coerceAtLeast(0))
+        targetIndex = (d - shiftDown + shiftUp).coerceIn(range.first, range.last)
     }
 
     /** 条目让位平移量（dragReorder 修饰符读取）。 */
@@ -713,26 +761,76 @@ class DragReorderState(
         val s = settlingIndex
         if (s != null) {
             if (index == s) return 0f
-            return shifts[index]?.value ?: 0f
+            // r63d：提交后让位条目的动画值 + 平移补偿（新槽位已平移
+            // 一个 stride，加补偿后视觉连续，Animatable 趋向 ±stride
+            // 恰好整体归零）
+            val anim = shifts[index]?.value ?: 0f
+            val adj = settleAdjust[index] ?: 0f
+            return anim + adj
         }
         return 0f
     }
 
     /**
      * 松手：一次性提交换位 + 落位动画（让位平移 + 拖动偏移归零）。
+     *
+     * r63d 视口自洽四件套（让位判定改 dragOffset 后必须）：
+     * ① settle 起点改「视觉残差」ε：松手时 dragOffset ≈ (t-d)·stride + ε
+     *   （ε<stride，条目中心与目标槽中心的偏差）。提交重组后条目落新槽
+     *   （新槽视觉位置 = 原目标槽位置），translationY 只需从 ε 归零——
+     *   从 dragOffset 归零会先「飞回」再落位（r62 遗留，ε 小不显；
+     *   r63d 顶边界松手 ε 可达 stride，跳变明显）。
+     * ② 视口钉回：LazyColumn 锚定跟踪布局槽位（不知让位平移），提交后
+     *   视口被拉偏一格（t≠d 时锚定条目换人）——scrollToItem 钉回提交
+     *   前视口，保证「视觉排列 == 提交后排列」不变量成立。
+     * ③ 让位条目动画归零：提交后让位条目落新槽（视觉位置 = 原位 ±
+     *   stride = 新槽位），translationY 从 ±stride 归零无跳变。
+     * ④ 索引重映射：提交后数据换位，条目们落到新下标——settlingIndex
+     *   用新下标 t（旧 d 是别的歌！），让位动画跟歌重键 + 平移补偿
+     *   （新槽位平移一个 stride，Animatable 继续趋向 ±stride，加补偿
+     *   恰好整体归零）。r62 遗留：单格拖动 = 两歌互换再换回的毛刺。
      */
     fun onEnd() {
         val d = draggingIndex ?: return
         val t = targetIndex
-        val settlingOffset = dragOffset
+        // ① 残差：条目中心相对目标槽中心的偏差（ε < stride）
+        val settlingOffset = dragOffset - (t - d) * itemStride
+        // ② 视口快照：提交后钉回（等重组 + scrollToItem）
+        val firstIndex = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
+        val firstOffset = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.offset ?: 0
+        // ④ 让位动画快照（提交前旧下标 → 当前动画值/方向）
+        val oldShifts = shifts.entries.associate { (i, anim) ->
+            i to (anim.value to (if (i < d) 1 else -1))
+        }
         draggingIndex = null
         pointerY = null
         autoScrollJob?.cancel()
         autoScrollJob = null
         if (t != d) onMove(d, t)
-        settlingIndex = d
+        settlingIndex = t
+        // ④ 让位动画跟歌重键：旧 i 的歌提交后落新下标 i'（i<d → i+1，
+        // i>d → i-1），平移补偿 = -dir·stride（新槽位平移量）
+        shifts.clear()
+        settleAdjust.clear()
+        oldShifts.forEach { (i, pair) ->
+            val newIndex = if (i < d) i + 1 else i - 1
+            val dir = pair.second
+            val anim = Animatable(pair.first)
+            shifts[newIndex] = anim
+            settleAdjust[newIndex] = -dir * itemStride
+        }
+        dragOffset = settlingOffset
         settleJob = scope.launch {
             try {
+                // ② 等一帧数据重组（onMove → StateFlow → 重组 → 新布局），
+                // 再钉回视口——不等的话 scrollToItem 作用在旧布局上
+                if (t != d) {
+                    delay(50)
+                    listState.scrollToItem(firstIndex, 0)
+                    if (firstOffset != 0) {
+                        listState.scrollBy(-firstOffset.toFloat())
+                    }
+                }
                 val animJobs = shifts.values.map { anim ->
                     async { anim.animateTo(0f, tween(120)) }
                 }
@@ -749,6 +847,7 @@ class DragReorderState(
                     dragOffset = 0f
                     settlingIndex = null
                     shifts.clear()
+                    settleAdjust.clear()
                 }
             }
         }
@@ -801,6 +900,7 @@ class DragReorderState(
                     try {
                         val actual = listState.scrollBy(effective)
                         if (actual != 0f) {
+                            scrollAccum += actual
                             dragOffset += actual
                             updateShifts()
                         }
@@ -817,10 +917,12 @@ class DragReorderState(
 @Composable
 fun rememberDragReorderState(
     listState: LazyListState,
-    onMove: (Int, Int) -> Boolean
+    onMove: (Int, Int) -> Boolean,
+    /** r63d：可拖动条目区间（排除尾部 Spacer / 头部文件夹行）。 */
+    dragRange: (() -> IntRange)? = null
 ): DragReorderState {
     val scope = rememberCoroutineScope()
-    return remember(listState, scope) { DragReorderState(listState, onMove, scope) }
+    return remember(listState, scope) { DragReorderState(listState, onMove, scope, dragRange) }
 }
 
 /**
