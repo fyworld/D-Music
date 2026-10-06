@@ -89,6 +89,7 @@ fun AboutScreen(onBack: () -> Unit) {
     val uriHandler = LocalUriHandler.current
     var showDonate by remember { mutableStateOf(false) }
     var showUpdate by remember { mutableStateOf(false) }
+    var showOss by remember { mutableStateOf(false) }
     val updateInfo by UpdateManager.updateInfo.collectAsState()
     val context = LocalContext.current
 
@@ -287,6 +288,37 @@ fun AboutScreen(onBack: () -> Unit) {
             DisclaimerItem("本软件以 CC BY-NC-SA 4.0 协议开源。")
             DisclaimerItem("本软件按\u201c原样\u201d提供，不提供任何明示或暗示的保证，使用产生的一切法律责任由用户自行承担。")
             DisclaimerItem("版权投诉请通过 GitHub Issues 提交。")
+
+            HorizontalDivider()
+
+            // v1.5.1 r70c：开源声明入口（FFmpeg LGPL / QuickJS MIT 等第三方组件清单）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { showOss = true }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "开源声明",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = "（第三方组件与许可证）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    Icons.AutoMirrored.Filled.OpenInNew,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         // v1.4.18：打赏入口（自愿，不影响任何功能）——lite 纯净版不显示
@@ -316,6 +348,11 @@ fun AboutScreen(onBack: () -> Unit) {
     // v1.4.18：打赏弹层
     if (showDonate && BuildConfig.DONATE_ENABLED) {
         DonateSheet(onDismiss = { showDonate = false })
+    }
+
+    // v1.5.1 r70c：开源声明弹层
+    if (showOss) {
+        OssSheet(onDismiss = { showOss = false })
     }
 
     // v1.4.19：版本更新弹窗（共享组件 ui/components/UpdateDialog.kt）
@@ -403,6 +440,70 @@ private fun LinkRow(text: String, onClick: () -> Unit) {
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(18.dp)
         )
+    }
+}
+
+/**
+ * v1.5.1 r70c：开源声明底部弹窗——第三方开源组件与许可证清单
+ * （与 README「开源组件」节一致）。FFmpeg LGPL-2.1+ / QuickJS MIT /
+ * 其余 Apache-2.0；完整许可证文本见各组件官方仓库（README 提供链接）。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun OssSheet(onDismiss: () -> Unit) {
+    // 组件名 → 许可证（展示顺序与 README 一致）
+    val components = listOf(
+        "FFmpeg 6.0（DTS 软解）" to "LGPL-2.1-or-later",
+        "QuickJS / quickjs-ng（音源脚本引擎）" to "MIT",
+        "quickjs-wrapper（QuickJS Android 绑定）" to "Apache-2.0",
+        "Kotlin / Compose / Material 3" to "Apache-2.0",
+        "Media3 / ExoPlayer 1.3.1" to "Apache-2.0",
+        "OkHttp 4.12" to "Apache-2.0",
+        "Coil 2.6" to "Apache-2.0",
+        "mp3agic 0.9.1（ID3v2 标签）" to "MIT"
+    )
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "开源声明",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "本软件使用了以下开源组件，感谢这些项目的作者与社区。各组件的完整许可证文本见其官方仓库。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(4.dp))
+            components.forEach { (name, license) ->
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = license,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "完整清单与链接见 GitHub 仓库 README「开源组件」节。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(16.dp))
+        }
     }
 }
 

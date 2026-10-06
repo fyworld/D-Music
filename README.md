@@ -61,6 +61,23 @@
 | 持久化 | SharedPreferences (JSON) |
 | 架构 | MVVM（ViewModel + StateFlow） |
 
+### 开源组件
+
+本项目使用以下开源组件，感谢这些项目的作者与社区：
+
+| 组件 | 用途 | 许可证 |
+|------|------|--------|
+| [FFmpeg](https://ffmpeg.org) 6.0 | DTS 软解（静态链接，仅 dts 解码器） | LGPL-2.1-or-later |
+| [QuickJS](https://github.com/quickjs-ng/quickjs)（quickjs-ng） | 自定义音源脚本引擎（经 [quickjs-wrapper](https://github.com/HarlonWang/quickjs-wrapper) 封装） | MIT |
+| [quickjs-wrapper](https://github.com/HarlonWang/quickjs-wrapper) | QuickJS 的 Android/JVM 绑定 | Apache-2.0 |
+| [Kotlin](https://kotlinlang.org) / [Compose](https://developer.android.com/jetpack/compose) / [Material 3](https://m3.material.io) | UI 框架 | Apache-2.0 |
+| [Media3 / ExoPlayer](https://developer.android.com/media/media3) 1.3.1 | 播放器 | Apache-2.0 |
+| [OkHttp](https://square.github.io/okhttp/) 4.12 | 网络 | Apache-2.0 |
+| [Coil](https://coil-kt.github.io/coil/) 2.6 | 图片加载 | Apache-2.0 |
+| [mp3agic](https://github.com/mpatric/mp3agic) 0.9.1 | ID3v2 标签读写 | MIT |
+
+各组件的完整许可证文本见其官方仓库。
+
 ## 构建
 
 **环境要求**：JDK 17、Android SDK 34（compileSdk 34 / minSdk 24）、CMake 3.22.1、NDK r26d（DTS 软解模块构建用）
