@@ -24,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Explore
-import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
@@ -126,6 +125,9 @@ fun SolaraApp() {
 
     // "我的"页面：null 表示未进入；进入后显示设置或下载管理
     var mePage by rememberSaveable { mutableStateOf<String?>(savedUi?.second) }
+    // v1.5.1 r68：自定义源从设置页进入的标记——返回时回设置页
+    // （原「我的」菜单直入入口已删除，仅剩设置页一条路）
+    var customSourceFromSettings by rememberSaveable { mutableStateOf(false) }
 
     // 全局弹窗状态：加入歌单 / 下载品质选择
     var playlistTarget by remember { mutableStateOf<Song?>(null) }
@@ -306,16 +308,8 @@ fun SolaraApp() {
                                             mePage = MePage.DOWNLOADS.name
                                         }
                                     )
-                                    DropdownMenuItem(
-                                        text = { Text("自定义音源") },
-                                        leadingIcon = {
-                                            Icon(Icons.Filled.Extension, contentDescription = null)
-                                        },
-                                        onClick = {
-                                            meMenuOpen = false
-                                            mePage = MePage.CUSTOM_SOURCE.name
-                                        }
-                                    )
+                                    // v1.5.1 r68：自定义音源入口移入设置页
+                                    // （设置 → 自定义源 → LX 音源），菜单不再直入
                                     DropdownMenuItem(
                                         text = { Text("关于") },
                                         leadingIcon = {
@@ -343,7 +337,13 @@ fun SolaraApp() {
             if (mePage != null) {
                 // "我的"子页面：设置 / 下载管理
                 when (mePage) {
-                    MePage.SETTINGS.name -> SettingsScreen()
+                    MePage.SETTINGS.name -> SettingsScreen(
+                        // v1.5.1 r68：设置 → 自定义源 → LX 音源跳转
+                        onOpenCustomSource = {
+                            customSourceFromSettings = true
+                            mePage = MePage.CUSTOM_SOURCE.name
+                        }
+                    )
                     MePage.DOWNLOADS.name -> DownloadScreen(
                         onBack = { mePage = null },
                         onAddToPlaylist = { playlistTarget = it },
@@ -356,9 +356,15 @@ fun SolaraApp() {
                         onShowMessage = showMessage,
                         onLyricUpdated = { playerVm.notifyLyricUpdated() }
                     )
-                    // v1.5.1 r26：自定义音源管理页
+                    // v1.5.1 r26：自定义音源管理页（r68 起仅从设置页进入，
+                    // 返回时回设置页）
                     MePage.CUSTOM_SOURCE.name -> com.solara.music.ui.customsource.CustomSourceScreen(
-                        onBack = { mePage = null },
+                        onBack = {
+                            if (customSourceFromSettings) {
+                                customSourceFromSettings = false
+                                mePage = MePage.SETTINGS.name
+                            } else mePage = null
+                        },
                         onShowMessage = showMessage
                     )
                     MePage.ABOUT.name -> AboutScreen(onBack = { mePage = null })

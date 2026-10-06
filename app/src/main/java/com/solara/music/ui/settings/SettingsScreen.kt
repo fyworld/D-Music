@@ -24,9 +24,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -55,6 +60,7 @@ import com.solara.music.data.MusicApi
 import com.solara.music.data.Qualities
 import com.solara.music.data.Store
 import com.solara.music.data.ThemeMode
+import com.solara.music.customsource.CustomSourceManager
 import com.solara.music.ui.theme.AccentPalettes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,9 +68,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(onOpenCustomSource: () -> Unit = {}) {
     val settings by Store.settings.collectAsState()
-    var apiInput by remember(settings.apiBaseUrl) { mutableStateOf(settings.apiBaseUrl) }
     val context = LocalContext.current
     // v1.4.5：所有文件访问状态——从系统设置返回（ON_RESUME）时刷新
     var hasAllFilesAccess by remember { mutableStateOf(DownloadManager.hasAllFilesAccess()) }
@@ -303,37 +308,6 @@ fun SettingsScreen() {
             )
         }
 
-        SettingsCard(title = "聚合 API 地址") {
-            OutlinedTextField(
-                value = apiInput,
-                onValueChange = { apiInput = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("API Base URL") },
-                singleLine = true,
-                shape = MaterialTheme.shapes.large
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        Store.updateSettings { it.copy(apiBaseUrl = apiInput.trim()) }
-                    }
-                ) { Text("保存") }
-                OutlinedButton(
-                    onClick = {
-                        apiInput = MusicApi.DEFAULT_BASE_URL
-                        Store.updateSettings { it.copy(apiBaseUrl = MusicApi.DEFAULT_BASE_URL) }
-                    }
-                ) { Text("恢复默认") }
-            }
-            Text(
-                text = "默认使用 GD音乐台聚合接口，被拦截时可在部署端更换备用地址",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-        }
-
         SettingsCard(title = "本地文件管理权限") {
             Text(
                 text = if (hasAllFilesAccess) {
@@ -430,6 +404,111 @@ fun SettingsScreen() {
                         }
                     },
                     label = { Text(if (clearing) "清空中…" else "清空缓存") }
+                )
+            }
+        }
+
+        // v1.5.1 r68：自定义源（整合原「聚合 API 地址」与「我的」菜单的
+        // 自定义音源入口）——GD 音源可折叠配置 API 地址；LX 音源跳转
+        // 管理页（导入/启用/触发策略/测试取歌）。
+        SettingsCard(title = "自定义源") {
+            // GD 音源：可折叠行（默认折叠，点标题展开 API 配置）
+            var gdExpanded by remember { mutableStateOf(false) }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(MaterialTheme.shapes.medium)
+                    .clickable { gdExpanded = !gdExpanded }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "GD 音源",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = if (settings.apiBaseUrl == MusicApi.DEFAULT_BASE_URL)
+                            "GD音乐台聚合接口（默认地址）"
+                        else "自定义地址：${settings.apiBaseUrl}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    imageVector = if (gdExpanded) Icons.Filled.ExpandLess
+                    else Icons.Filled.ExpandMore,
+                    contentDescription = if (gdExpanded) "收起" else "展开",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (gdExpanded) {
+                var apiInput by remember(settings.apiBaseUrl) { mutableStateOf(settings.apiBaseUrl) }
+                OutlinedTextField(
+                    value = apiInput,
+                    onValueChange = { apiInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("API Base URL") },
+                    singleLine = true,
+                    shape = MaterialTheme.shapes.large
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            Store.updateSettings { it.copy(apiBaseUrl = apiInput.trim()) }
+                        }
+                    ) { Text("保存") }
+                    OutlinedButton(
+                        onClick = {
+                            apiInput = MusicApi.DEFAULT_BASE_URL
+                            Store.updateSettings { it.copy(apiBaseUrl = MusicApi.DEFAULT_BASE_URL) }
+                        }
+                    ) { Text("恢复默认") }
+                }
+                Text(
+                    text = "默认使用 GD音乐台聚合接口，被拦截时可在部署端更换备用地址",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            // LX 音源：跳转行（副标题显示当前启用脚本状态）
+            val scripts by CustomSourceManager.scripts.collectAsState()
+            val activeId by CustomSourceManager.activeId.collectAsState()
+            val activeScript = scripts.firstOrNull { it.id == activeId }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(MaterialTheme.shapes.medium)
+                    .clickable { onOpenCustomSource() }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "LX 音源",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = activeScript?.let { "已启用：${it.name}" }
+                            ?: if (scripts.isEmpty()) "未导入脚本（点此导入 lx-music 音源）"
+                            else "未启用（已导入 ${scripts.size} 个）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "管理",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
