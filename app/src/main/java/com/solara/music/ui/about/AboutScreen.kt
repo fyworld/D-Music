@@ -286,7 +286,7 @@ fun AboutScreen(onBack: () -> Unit) {
 
             HorizontalDivider()
 
-            // v1.5.1 r70c：开源声明入口（FFmpeg LGPL / QuickJS MIT 等第三方组件清单）
+            // v1.5.1 r70c/r70j：开源声明 & 致谢入口（第三方组件清单 + 参考项目/数据来源）
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -296,7 +296,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "开源声明",
+                    text = "开源声明 & 致谢",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -313,24 +313,6 @@ fun AboutScreen(onBack: () -> Unit) {
                     modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            }
-
-            // v1.5.1 r70h：致谢（参考项目与数据来源，可点击跳转，详见 GitHub README 致谢节）
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    text = "致谢（参考项目与数据来源）：",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                LinkRow(text = "Solara") {
-                    uriHandler.openUri("https://github.com/akudamatata/Solara")
-                }
-                LinkRow(text = "lx-music") {
-                    uriHandler.openUri("https://github.com/lyswhut/lx-music-mobile")
-                }
-                LinkRow(text = "GD音乐台") {
-                    uriHandler.openUri("https://music.gdstudio.xyz")
-                }
             }
         }
 
@@ -484,7 +466,7 @@ private fun OssSheet(onDismiss: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "开源声明",
+                text = "开源声明 & 致谢",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -509,9 +491,47 @@ private fun OssSheet(onDismiss: () -> Unit) {
                     )
                 }
             }
+
+            HorizontalDivider()
+            Spacer(Modifier.height(2.dp))
+
+            // v1.5.1 r70j：致谢（参考项目与数据来源，可点击跳转）
+            Text(
+                text = "致谢",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            val uriHandler = LocalUriHandler.current
+            listOf(
+                "Solara" to "https://github.com/akudamatata/Solara",
+                "lx-music" to "https://github.com/lyswhut/lx-music-mobile",
+                "GD音乐台" to "https://music.gdstudio.xyz"
+            ).forEach { (name, url) ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { uriHandler.openUri(url) }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Icon(
+                        Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "完整清单与链接见 GitHub 仓库 README「开源组件」节。",
+                text = "完整清单与链接见 GitHub 仓库 README「开源组件」「致谢」节。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
