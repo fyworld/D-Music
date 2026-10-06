@@ -552,10 +552,11 @@ fun PlayerScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                     Row(
-                        // r66b：徽标与歌手名底对齐（原 CenterVertically 居中——
-                        // 徽标缩小后视觉上浮，底对齐更稳）
-                        verticalAlignment = Alignment.Bottom,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        // r66d：基线对齐（排版正解）——alignByBaseline 让
+                        // 歌手名与徽标文字的**基线**精确对齐，任何密度/
+                        // 字体下都成立（r66b 的 Bottom+固定 5dp 补偿在
+                        // 真机上 descent 空隙不同导致顶对齐观感）
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
                             text = current?.artistName ?: "—",
@@ -566,6 +567,7 @@ fun PlayerScreen(
                             modifier = Modifier
                                 .weight(1f, fill = false)
                                 .padding(top = 1.dp)
+                                .alignByBaseline()
                         )
                         // v1.5.1 r31：取歌链路徽标常显——自定义源高亮主色，
                         // 其余链路（GD/本地/缓存）中性色。常显的价值：
@@ -574,7 +576,7 @@ fun PlayerScreen(
                         // "没徽标"无法区分"走了 GD"还是"功能没生效"）
                         // v1.5.1 r66：文案精简（GD API→GD、自定义源→LX）+
                         // 字号改小三级（labelSmall 11sp → 8sp 自定义）
-                        // v1.5.1 r66b：背景块再缩（水平 6→4dp、垂直 1→0.5dp）
+                        // v1.5.1 r66c：背景块极限缩（水平 2dp、垂直 0dp）
                         val badge = when (resolveSource) {
                             "custom" -> "LX"
                             "api" -> "GD"
@@ -592,11 +594,7 @@ fun PlayerScreen(
                                 color = if (isCustom) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier
-                                    // r66b：视觉底对齐补偿——Alignment.Bottom
-                                    // 只对齐布局底边，歌手名文字底边距其布局
-                                    // 底边有 ~9px descent 空隙（bodySmall 12sp
-                                    // lineHeight 16sp），背景块需上抬补偿
-                                    .padding(bottom = 5.dp)
+                                    .alignByBaseline()
                                     .background(
                                         if (isCustom) MaterialTheme.colorScheme.primaryContainer
                                         else MaterialTheme.colorScheme.surfaceVariant,
