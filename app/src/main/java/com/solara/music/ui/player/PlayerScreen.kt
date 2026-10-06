@@ -779,7 +779,10 @@ fun PlayerScreen(
                             CoverImage(
                                 song = current,
                                 size = 300.dp,
-                                corner = 28.dp
+                                corner = 28.dp,
+                                // v1.5.1 r69：大封面不随界面缩放（像素恒定）——
+                                // 封面是播放页视觉锚点，同比例缩放后不好看
+                                keepPixelSize = true
                             )
                         }
                         Spacer(Modifier.height(16.dp))

@@ -64,6 +64,7 @@ import com.solara.music.data.LocalCoverExtractor
 import com.solara.music.data.MusicApi
 import com.solara.music.data.Song
 import com.solara.music.data.Store
+import com.solara.music.ui.theme.LocalUiScaleFactor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -119,8 +120,19 @@ internal fun isLxPlatformSource(source: String): Boolean =
  * 观察 [LocalCoverExtractor.revision]：批量匹配封面/重命名后自动刷新。
  */
 @Composable
-fun CoverImage(song: Song?, size: Dp, corner: Dp = 10.dp) {
+fun CoverImage(
+    song: Song?,
+    size: Dp,
+    corner: Dp = 10.dp,
+    // v1.5.1 r69：true = 尺寸反向补偿界面缩放（dp ÷ factor），像素恒定
+    // 不随「界面大小」设置变化——播放页大封面是视觉锚点，缩放后不好看
+    keepPixelSize: Boolean = false
+) {
     val context = LocalContext.current
+    // v1.5.1 r69：反向补偿后的实际渲染尺寸
+    val uiScaleFactor = if (keepPixelSize) LocalUiScaleFactor.current else 1.0f
+    val renderSize = if (keepPixelSize && uiScaleFactor != 1.0f) size / uiScaleFactor else size
+    val renderCorner = if (keepPixelSize && uiScaleFactor != 1.0f) corner / uiScaleFactor else corner
     val isLocal = song != null && LocalCoverExtractor.isLocalSong(song)
     // v1.4.0：封面数据变化（批量匹配/重命名）时触发整棵重组刷新
     val coverRev by LocalCoverExtractor.revision.collectAsState()
@@ -252,8 +264,8 @@ fun CoverImage(song: Song?, size: Dp, corner: Dp = 10.dp) {
 
     Box(
         modifier = Modifier
-            .size(size)
-            .clip(RoundedCornerShape(corner))
+            .size(renderSize)
+            .clip(RoundedCornerShape(renderCorner))
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
     ) {
@@ -291,7 +303,7 @@ fun CoverImage(song: Song?, size: Dp, corner: Dp = 10.dp) {
                 imageVector = Icons.Filled.MusicNote,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(size / 2)
+                modifier = Modifier.size(renderSize / 2)
             )
         }
     }

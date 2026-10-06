@@ -9,6 +9,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -74,6 +75,13 @@ private val DarkColors = darkScheme(AccentPalettes.mint)
  */
 val UiScaleFactors = floatArrayOf(0.8f, 0.9f, 1.0f, 1.1f, 1.2f)
 
+/**
+ * v1.5.1 r69：当前界面缩放系数（CompositionLocal）。
+ * 播放页大封面等「视觉锚点」用它反向补偿（dp ÷ factor），
+ * 保持像素尺寸恒定不随界面缩放——封面缩了视觉上不好看。
+ */
+val LocalUiScaleFactor = staticCompositionLocalOf { 1.0f }
+
 @Composable
 fun SolaraTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -99,7 +107,10 @@ fun SolaraTheme(
     val factor = UiScaleFactors[uiScaleLevel.coerceIn(0, 4)]
     val scaled = if (factor == 1.0f) base
     else Density(base.density * factor, base.fontScale)
-    CompositionLocalProvider(LocalDensity provides scaled) {
+    CompositionLocalProvider(
+        LocalDensity provides scaled,
+        LocalUiScaleFactor provides factor
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = SolaraTypography,
