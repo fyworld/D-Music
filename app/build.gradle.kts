@@ -11,8 +11,11 @@ android {
         applicationId = "com.solara.music"
         minSdk = 24
         targetSdk = 34
-        versionCode = 73
-        versionName = "1.5.0"
+        versionCode = 74
+        versionName = "1.5.1"
+        // v1.5.1：自定义音源（QuickJS 沙箱跑 lx-music 脚本）+ 五平台直连
+        // 搜索/歌词/封面 + 取歌失败自动换源 + 下载接入自定义源 +
+        // 列表拖动排序 iOS 式重构（r26-r65b 迭代）
         // v1.5.0：本地歌曲文件夹化 + DTS 播放 + 下载管理页 + 分享 +
         // 声道平衡 + 缓存补全 + 通知封面缓存（r1-r22 迭代）
         // FFmpeg DTS 软解模块——只编 arm64-v8a
