@@ -49,7 +49,10 @@ android {
             dimension = "version"
             applicationIdSuffix = ".lite"
             versionNameSuffix = "-lite"
-            buildConfigField("boolean", "DONATE_ENABLED", "false")
+            // v1.5.1 r70k：lite 打开打赏（Apache-2.0 下无协议风险）——功能与
+            // full 完全一致，仅保留包名让存量 lite 用户走应用内更新通道。
+            // 计划 v1.6.0 起单版本（full），lite 保留至 v1.5.x 结束。
+            buildConfigField("boolean", "DONATE_ENABLED", "true")
         }
     }
 
