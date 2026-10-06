@@ -88,6 +88,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.solara.music.data.Song
 import com.solara.music.data.Store
 import com.solara.music.data.LocalCoverExtractor
@@ -565,13 +566,15 @@ fun PlayerScreen(
                                 .padding(top = 1.dp)
                         )
                         // v1.5.1 r31：取歌链路徽标常显——自定义源高亮主色，
-                        // 其余链路（GD API/本地/缓存）中性色。常显的价值：
+                        // 其余链路（GD/本地/缓存）中性色。常显的价值：
                         // 用户随时能看到当前歌走哪条链路；切策略/换歌后徽标
                         // 变化直观可验证（之前只在 custom 时显示，其他情况
                         // "没徽标"无法区分"走了 GD"还是"功能没生效"）
+                        // v1.5.1 r66：文案精简（GD API→GD、自定义源→LX）+
+                        // 字号改小三级（labelSmall 11sp → 8sp 自定义）
                         val badge = when (resolveSource) {
-                            "custom" -> "自定义源"
-                            "api" -> "GD API"
+                            "custom" -> "LX"
+                            "api" -> "GD"
                             "local" -> "本地"
                             "cache" -> "缓存"
                             else -> null
@@ -580,6 +583,8 @@ fun PlayerScreen(
                             val isCustom = resolveSource == "custom"
                             Text(
                                 text = badge,
+                                fontSize = 8.sp,
+                                lineHeight = 8.sp,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (isCustom) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
