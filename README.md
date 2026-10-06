@@ -153,7 +153,7 @@ app/src/main/java/com/solara/music/
 
 ## 项目协议
 
-本项目以 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh) 协议开源，以下条款是对该协议的补充说明，如有冲突，以以下条款为准。
+本项目基于 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 许可证发行，以下条款是对 Apache License 2.0 的补充，如有冲突，以以下条款为准。
 
 ---
 
@@ -203,7 +203,7 @@ app/src/main/java/com/solara/music/
 
 ## 致谢
 
-- [Solara](https://github.com/akudamatata/Solara) —— 项目初期参考其产品设计（CC BY-NC-SA）
+- [Solara](https://github.com/akudamatata/Solara) —— 项目初期参考其产品设计
 - [lx-music](https://github.com/lyswhut/lx-music-mobile) —— 自定义音源脚本契约与平台接口实现的参考（Apache-2.0）
 - [GD音乐台](https://music.gdstudio.xyz) —— 免费音乐聚合 API
 - 所有为本项目提出建议和反馈的用户

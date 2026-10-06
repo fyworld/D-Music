@@ -246,7 +246,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "本软件完全免费，代码已开源（CC BY-NC-SA 4.0，禁止商用）。",
+                text = "本软件完全免费，代码已开源（Apache-2.0，禁止商用）。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -285,7 +285,7 @@ fun AboutScreen(onBack: () -> Unit) {
             )
             DisclaimerItem("本软件不提供、不存储、不分发任何音乐文件，音频内容来自第三方免费聚合 API 与用户自行导入的自定义音源。")
             DisclaimerItem("音乐版权归原权利人所有，本软件仅供个人学习交流使用，禁止任何商业用途。")
-            DisclaimerItem("本软件以 CC BY-NC-SA 4.0 协议开源。")
+            DisclaimerItem("本软件以 Apache-2.0 协议开源（附补充协议，禁止商用）。")
             DisclaimerItem("本软件按\u201c原样\u201d提供，不提供任何明示或暗示的保证，使用产生的一切法律责任由用户自行承担。")
             DisclaimerItem("版权投诉请通过 GitHub Issues 提交。")
 
@@ -535,7 +535,7 @@ private fun DonateSheet(onDismiss: () -> Unit) {
             Spacer(Modifier.height(12.dp))
             Text(
                 text = "D Music 是一个个人维护的开源项目，" +
-                    "以 CC BY-NC-SA 4.0 协议开源，永久免费、无广告、无内购。",
+                    "以 Apache-2.0 协议开源（附补充协议，禁止商用），永久免费、无广告、无内购。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
