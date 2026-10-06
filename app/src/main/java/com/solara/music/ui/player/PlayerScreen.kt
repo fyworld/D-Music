@@ -552,7 +552,9 @@ fun PlayerScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
+                        // r66b：徽标与歌手名底对齐（原 CenterVertically 居中——
+                        // 徽标缩小后视觉上浮，底对齐更稳）
+                        verticalAlignment = Alignment.Bottom,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
@@ -572,6 +574,7 @@ fun PlayerScreen(
                         // "没徽标"无法区分"走了 GD"还是"功能没生效"）
                         // v1.5.1 r66：文案精简（GD API→GD、自定义源→LX）+
                         // 字号改小三级（labelSmall 11sp → 8sp 自定义）
+                        // v1.5.1 r66b：背景块再缩（水平 6→4dp、垂直 1→0.5dp）
                         val badge = when (resolveSource) {
                             "custom" -> "LX"
                             "api" -> "GD"
@@ -589,13 +592,17 @@ fun PlayerScreen(
                                 color = if (isCustom) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier
-                                    .padding(top = 1.dp)
+                                    // r66b：视觉底对齐补偿——Alignment.Bottom
+                                    // 只对齐布局底边，歌手名文字底边距其布局
+                                    // 底边有 ~9px descent 空隙（bodySmall 12sp
+                                    // lineHeight 16sp），背景块需上抬补偿
+                                    .padding(bottom = 5.dp)
                                     .background(
                                         if (isCustom) MaterialTheme.colorScheme.primaryContainer
                                         else MaterialTheme.colorScheme.surfaceVariant,
                                         MaterialTheme.shapes.extraSmall
                                     )
-                                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                                    .padding(horizontal = 4.dp, vertical = 0.5.dp)
                             )
                         }
                     }
