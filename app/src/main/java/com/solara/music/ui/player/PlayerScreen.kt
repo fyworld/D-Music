@@ -602,7 +602,7 @@ fun PlayerScreen(
                                         else MaterialTheme.colorScheme.surfaceVariant,
                                         MaterialTheme.shapes.extraSmall
                                     )
-                                    .padding(horizontal = 4.dp, vertical = 0.5.dp)
+                                    .padding(horizontal = 2.dp, vertical = 0.dp)
                             )
                         }
                     }
