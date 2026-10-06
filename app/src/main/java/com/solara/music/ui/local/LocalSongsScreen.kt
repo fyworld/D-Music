@@ -65,6 +65,7 @@ import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.LocalFileOpsHandler
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
+import com.solara.music.ui.components.DragReorderOverlay
 import com.solara.music.ui.components.dragReorderItem
 import com.solara.music.ui.components.dragReorderSource
 import com.solara.music.ui.components.keepScrollAfterMove
@@ -520,26 +521,26 @@ fun LocalSongsScreen(
                 )
             }
 
-            else -> LazyColumn(
-                state = listState,
-                // r64：手势检测移到容器层（条目回收不再杀死拖动）。
-                // dragRange 与 DragReorderState 同源：排除头部文件夹区
-                // + 尾部 Spacer
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .dragReorderSource(
-                        dragState, listState,
-                        enabled = !select.active
-                    ) {
-                        val fc = content?.folders?.size ?: 0
-                        val n = content?.let {
-                            Store.applyLocalSongOrder(currentPath ?: "", it.songs)
-                        }?.size ?: 0
-                        fc until fc + n
-                    },
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            else -> Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    // r64：手势检测移到容器层（条目回收不再杀死拖动）。
+                    // dragRange 与 DragReorderState 同源：排除头部文件夹区
+                    // + 尾部 Spacer
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .dragReorderSource(
+                            dragState, listState,
+                            enabled = !select.active
+                        ) {
+                            val fc = content?.folders?.size ?: 0
+                            val n = content?.let {
+                                Store.applyLocalSongOrder(currentPath ?: "", it.songs)
+                            }?.size ?: 0
+                            fc until fc + n
+                        },
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                 // 文件夹行（在前）
                 items(content?.folders ?: emptyList(), key = { it.name }) { folder ->
                     // v1.4.59 r15：当前播放歌曲属于该文件夹（含子目录）时
@@ -625,6 +626,9 @@ fun LocalSongsScreen(
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }
+                }
+                // r65：拖动条目快照 overlay（条目回收不再导致消失）
+                DragReorderOverlay(dragState)
             }
         }
     }

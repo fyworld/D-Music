@@ -55,6 +55,7 @@ import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
+import com.solara.music.ui.components.DragReorderOverlay
 import com.solara.music.ui.components.dragReorderItem
 import com.solara.music.ui.components.dragReorderSource
 import com.solara.music.ui.components.keepScrollAfterMove
@@ -129,27 +130,30 @@ fun PlaylistsScreen(
                 EmptyState("还没有歌单\n点右上角 + 新建一个，整理你的收藏")
             }
         } else {
-            LazyColumn(
-                state = listState,
-                // r64：手势检测移到容器层（条目回收不再杀死拖动）
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .dragReorderSource(dragState, listState) { 0 until playlists.size },
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(playlists.size) { i ->
-                    PlaylistCard(
-                        playlist = playlists[i],
-                        isPlaying = currentSong?.let { cur ->
-                            playlists[i].songs.any { it.sameAs(cur) }
-                        } == true,
-                        onClick = { openPlaylistId = playlists[i].id },
-                        // v1.5.1 r49：长按拖动排序
-                        modifier = Modifier.dragReorderItem(dragState, i)
-                    )
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    // r64：手势检测移到容器层（条目回收不再杀死拖动）
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .dragReorderSource(dragState, listState) { 0 until playlists.size },
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(playlists.size) { i ->
+                        PlaylistCard(
+                            playlist = playlists[i],
+                            isPlaying = currentSong?.let { cur ->
+                                playlists[i].songs.any { it.sameAs(cur) }
+                            } == true,
+                            onClick = { openPlaylistId = playlists[i].id },
+                            // v1.5.1 r49：长按拖动排序
+                            modifier = Modifier.dragReorderItem(dragState, i)
+                        )
+                    }
+                    item { Spacer(Modifier.height(8.dp)) }
                 }
-                item { Spacer(Modifier.height(8.dp)) }
+                // r65：拖动条目快照 overlay（条目回收不再导致消失）
+                DragReorderOverlay(dragState)
             }
         }
     }
@@ -379,17 +383,17 @@ private fun PlaylistDetailScreen(
                 EmptyState("歌单还是空的\n在歌曲行菜单里选「加入歌单」")
             }
         } else {
-            LazyColumn(
-                state = listState,
-                // r64：手势检测移到容器层（条目回收不再杀死拖动）
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .dragReorderSource(dragState, listState, enabled = !select.active) {
-                        0 until playlist.songs.size
-                    },
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    // r64：手势检测移到容器层（条目回收不再杀死拖动）
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .dragReorderSource(dragState, listState, enabled = !select.active) {
+                            0 until playlist.songs.size
+                        },
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                 // r52：key = 歌曲稳定标识——交换后组件跟随数据移动，
                 // 拖动手势协程保持绑定（无 key 时组件按位置复用，
                 // 交换后手势组件显示别的歌 → 手势取消 → 滚动中断）
@@ -430,6 +434,9 @@ private fun PlaylistDetailScreen(
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }
+                }
+                // r65：拖动条目快照 overlay（条目回收不再导致消失）
+                DragReorderOverlay(dragState)
             }
         }
     }

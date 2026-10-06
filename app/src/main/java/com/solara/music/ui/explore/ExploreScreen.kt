@@ -51,6 +51,7 @@ import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SaveAsPlaylistDialog
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
+import com.solara.music.ui.components.DragReorderOverlay
 import com.solara.music.ui.components.dragReorderItem
 import com.solara.music.ui.components.dragReorderSource
 import com.solara.music.ui.components.rememberDragReorderState
@@ -212,17 +213,17 @@ fun ExploreScreen(
                             onMultiSelect = { select.enter() }
                         )
                     }
-                    LazyColumn(
-                        state = listState,
-                        // r64：手势检测移到容器层（条目回收不再杀死拖动）
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .dragReorderSource(dragState, listState, enabled = !select.active) {
-                                0 until results.size
-                            },
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        LazyColumn(
+                            state = listState,
+                            // r64：手势检测移到容器层（条目回收不再杀死拖动）
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .dragReorderSource(dragState, listState, enabled = !select.active) {
+                                    0 until results.size
+                                },
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                         // r60-3：key = 稳定标识（r52 教训——无 key 时组件按位置
                         // 复用，换位后手势组件随滚动滚出视口被回收 → 手势静默
                         // 死亡 → 松手 onEnd 永不触发 → 自动滚动永不停止）
@@ -251,6 +252,9 @@ fun ExploreScreen(
                             )
                         }
                         item { Spacer(Modifier.height(8.dp)) }
+                        }
+                        // r65：拖动条目快照 overlay（条目回收不再导致消失）
+                        DragReorderOverlay(dragState)
                     }
                 }
             }

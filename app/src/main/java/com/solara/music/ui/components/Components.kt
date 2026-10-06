@@ -657,6 +657,33 @@ class DragReorderState(
      *  （Animatable 继续原 tween 趋向 ±stride，加补偿后恰好归零）。 */
     private val settleAdjust = mutableMapOf<Int, Float>()
 
+    /**
+     * r65：拖动条目的视觉快照（overlay 渲染用）。
+     * 根因：r62 架构下拖动中数据不动，槽位冻结在原下标——自动滚动
+     * 时槽位滚出组合缓存区 → 条目组件被回收 → translationY 无处
+     * 渲染 → **条目消失**（r64 修了手势死亡，渲染仍依赖组件存在）。
+     * 修复（iOS drag preview 同构）：onStart 时截图，拖动期间 overlay
+     * 显示快照跟手（快照永不回收），原条目 alpha=0；松手清除快照，
+     * 条目落位动画接管。
+     */
+    var dragSnapshot by mutableStateOf<android.graphics.Bitmap?>(null)
+        private set
+
+    /** r65：快照渲染的屏幕 top（视口坐标，含 clamp 后的 dragOffset）。 */
+    var snapshotTopY by mutableFloatStateOf(0f)
+        private set
+
+    /** r65：快照渲染的左边界（视口坐标，onStart 时取列表内容左界）。 */
+    var snapshotLeftX by mutableFloatStateOf(0f)
+        private set
+
+    /** r65：快照宽度（onStart 时取条目宽）。 */
+    var snapshotWidth by mutableFloatStateOf(0f)
+        private set
+
+    /** r65：截图回调（onStart 时由容器调用，在主线程外截图）。 */
+    internal var snapshotProvider: ((index: Int) -> android.graphics.Bitmap?)? = null
+
     fun onStart(index: Int, yInItem: Float) {
         settleJob?.cancel()
         settleJob = null
@@ -676,6 +703,12 @@ class DragReorderState(
         if (self in 0 until infos.size - 1) {
             itemStride = (infos[self + 1].offset - infos[self].offset).toFloat()
         }
+        // r65：截图 + 快照几何（overlay 渲染，条目回收不再导致消失）。
+        // 条目都是 fillMaxWidth——快照全宽，left=0，width=视口宽
+        snapshotTopY = dragBaseTopY
+        snapshotLeftX = 0f
+        snapshotWidth = listState.layoutInfo.viewportSize.width.toFloat()
+        dragSnapshot = snapshotProvider?.invoke(index)
     }
 
     /**
@@ -701,6 +734,8 @@ class DragReorderState(
         val newGesture = (gestureOffset + delta).coerceIn(minGesture, maxGesture)
         dragOffset += newGesture - gestureOffset
         pointerY = pointerY?.plus(delta)
+        // r65：快照跟手（条目屏幕视觉 top = dragBaseTopY + gestureOffset）
+        snapshotTopY = dragBaseTopY + newGesture
         updateShifts()
     }
 
@@ -805,6 +840,10 @@ class DragReorderState(
         pointerY = null
         autoScrollJob?.cancel()
         autoScrollJob = null
+        // r65：清除快照——条目提交重组到新下标（视口钉回后可见），
+        // settle 动画接管视觉。快照与条目在提交瞬间视觉位置一致
+        //（快照 top = 条目新槽视觉位置 + ε 残差），无跳变
+        dragSnapshot = null
         if (t != d) onMove(d, t)
         settlingIndex = t
         // ④ 让位动画跟歌重键：旧 i 的歌提交后落新下标 i'（i<d → i+1，
@@ -860,6 +899,8 @@ class DragReorderState(
         autoScrollJob = null
         settleJob?.cancel()
         settleJob = null
+        // r65：清除快照（条目恢复原位渲染）
+        dragSnapshot = null
         scope.launch {
             shifts.values.forEach { it.snapTo(0f) }
             shifts.clear()
@@ -985,24 +1026,59 @@ suspend fun keepScrollAfterMove(
 
 /**
  * 列表条目的拖动排序视觉修饰符（r64：从 dragReorder 拆分）。
- * 拖动条目：zIndex 置顶 + translationY = dragOffset（跟手）。
+ * 拖动条目：r65 起拖动期间 alpha=0（视觉由 DragReorderOverlay 的
+ * 快照接管——条目组件滚出缓存区被回收不再导致消失）；松手 settle
+ * 期间恢复渲染 + translationY = dragOffset（落位动画）。
  * 其他条目：translationY = shiftOf(index)（让位平移，松手归零）。
  * [index] 必须是该条目在 LazyColumn 中的绝对下标。
- * **不含手势**——手势统一在容器 dragReorderSource（r64 架构），
- * 条目滚出视口被回收不再杀死进行中的拖动。
+ * **不含手势**——手势统一在容器 dragReorderSource（r64 架构）。
  */
 @Composable
 fun Modifier.dragReorderItem(dragState: DragReorderState, index: Int): Modifier {
     return this
         .zIndex(if (dragState.draggingIndex == index || dragState.settlingIndex == index) 1f else 0f)
         .graphicsLayer {
-            val dragging = dragState.draggingIndex == index || dragState.settlingIndex == index
-            translationY = if (dragging) {
-                dragState.dragOffset
+            val dragging = dragState.draggingIndex == index
+            val settling = dragState.settlingIndex == index
+            if (dragging) {
+                // r65：拖动期间隐藏（快照接管视觉）
+                alpha = 0f
             } else {
-                dragState.shiftOf(index)
+                alpha = 1f
+                translationY = if (settling) {
+                    dragState.dragOffset
+                } else {
+                    dragState.shiftOf(index)
+                }
             }
         }
+}
+
+/**
+ * r65：拖动条目的快照 overlay——包在 LazyColumn 外层（Box）。
+ * onStart 截图 → 拖动期间快照跟手（永不回收）→ 松手清除。
+ * 必须与 LazyColumn 同一个 Box 父级，坐标才对齐（视口坐标系）。
+ */
+@Composable
+fun DragReorderOverlay(dragState: DragReorderState) {
+    val bmp = dragState.dragSnapshot ?: return
+    androidx.compose.foundation.Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(10f)
+    ) {
+        drawImage(
+            image = bmp.asImageBitmap(),
+            dstOffset = androidx.compose.ui.unit.IntOffset(
+                dragState.snapshotLeftX.toInt(),
+                dragState.snapshotTopY.toInt()
+            ),
+            dstSize = androidx.compose.ui.unit.IntSize(
+                dragState.snapshotWidth.toInt().coerceAtLeast(1),
+                dragState.dragSnapshot?.height ?: 1
+            )
+        )
+    }
 }
 
 /**
@@ -1034,6 +1110,32 @@ fun Modifier.dragReorderSource(
     dragRange: (() -> IntRange)? = null
 ): Modifier {
     val view = LocalView.current
+    // r65：截图 provider——View.draw 整个容器到视口大小 Bitmap，
+    // 裁剪条目区域（条目必然在视口内，长按的条目可见）。
+    // onDragStart 在主线程，View.draw 同步可行（无 GPU 等待）。
+    dragState.snapshotProvider = { index ->
+        try {
+            val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+            if (info == null) {
+                null
+            } else {
+                val w = view.width.coerceAtLeast(1)
+                val h = view.height.coerceAtLeast(1)
+                val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(bmp)
+                view.draw(canvas)
+                val top = info.offset.coerceIn(0, h - 1)
+                val bottom = (info.offset + info.size).coerceAtMost(h)
+                if (bottom - top <= 0) {
+                    null
+                } else {
+                    android.graphics.Bitmap.createBitmap(bmp, 0, top, w, bottom - top)
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
     return this.pointerInput(enabled) {
         if (!enabled) return@pointerInput
         detectDragGesturesAfterLongPress(

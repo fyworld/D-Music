@@ -43,6 +43,7 @@ import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
+import com.solara.music.ui.components.DragReorderOverlay
 import com.solara.music.ui.components.dragReorderItem
 import com.solara.music.ui.components.dragReorderSource
 import com.solara.music.ui.components.keepScrollAfterMove
@@ -161,17 +162,17 @@ fun FavoritesScreen(
                 EmptyState("还没有收藏的歌曲\n在搜索结果中点击 ♥ 收藏喜欢的音乐")
             }
         } else {
-            LazyColumn(
-                state = listState,
-                // r64：手势检测移到容器层（条目回收不再杀死拖动）
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .dragReorderSource(dragState, listState, enabled = !select.active) {
-                        0 until favorites.size
-                    },
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    // r64：手势检测移到容器层（条目回收不再杀死拖动）
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .dragReorderSource(dragState, listState, enabled = !select.active) {
+                            0 until favorites.size
+                        },
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                 // r52：key = 歌曲稳定标识——交换后组件跟随数据移动，
                 // 拖动手势协程保持绑定（无 key 时组件按位置复用，
                 // 交换后手势组件显示别的歌 → 手势取消 → 滚动中断）
@@ -211,6 +212,9 @@ fun FavoritesScreen(
                         modifier = if (select.active) Modifier else Modifier.dragReorderItem(dragState, i)
                     )
                 }
+                }
+                // r65：拖动条目快照 overlay（条目回收不再导致消失）
+                DragReorderOverlay(dragState)
             }
         }
         Spacer(Modifier.height(8.dp))

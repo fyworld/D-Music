@@ -41,6 +41,7 @@ import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
+import com.solara.music.ui.components.DragReorderOverlay
 import com.solara.music.ui.components.dragReorderItem
 import com.solara.music.ui.components.dragReorderSource
 import com.solara.music.ui.components.rememberDragReorderState
@@ -173,43 +174,46 @@ fun RecentScreen(
                 EmptyState("还没有播放记录\n试听过的歌曲会出现在这里")
             }
         } else {
-            LazyColumn(
-                state = listState,
-                // r64：手势检测移到容器层——条目滚出视口被回收不再
-                // 杀死进行中的拖动（「拖到边缘自动滚动 3-4 行后停止」
-                // 根因修复）
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .dragReorderSource(dragState, listState, enabled = !select.active) {
-                        0 until recent.size
-                    },
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // r60-3：key = 稳定标识（r52 教训——无 key 时组件按位置
-                // 复用，换位后手势组件随滚动滚出视口被回收 → 手势静默
-                // 死亡 → 松手 onEnd 永不触发 → 自动滚动永不停止）
-                items(
-                    count = recent.size,
-                    key = { i -> recent[i].source + ":" + recent[i].id }
-                ) { i ->
-                    val song = recent[i]
-                    SongRow(
-                        song = song,
-                        isFavorite = favorites.any { it.sameAs(song) },
-                        isCurrent = currentSong?.sameAs(song) == true,
-                        onClick = { PlayerManager.setQueue(recent, i) },
-                        onToggleFavorite = { Store.toggleFavorite(song) },
-                        onAddToPlaylist = { onAddToPlaylist(song) },
-                        onRemove = { Store.removeRecent(song) },
-                        onDownload = { onDownload(song) },
-                        selectionMode = select.active,
-                        selected = select.isSelected(song),
-                        onSelect = { select.toggle(song) },
-                        modifier = if (select.active) Modifier else Modifier.dragReorderItem(dragState, i)
-                    )
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(
+                    state = listState,
+                    // r64：手势检测移到容器层——条目滚出视口被回收不再
+                    // 杀死进行中的拖动（「拖到边缘自动滚动 3-4 行后停止」
+                    // 根因修复）
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .dragReorderSource(dragState, listState, enabled = !select.active) {
+                            0 until recent.size
+                        },
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // r60-3：key = 稳定标识（r52 教训——无 key 时组件按位置
+                    // 复用，换位后手势组件随滚动滚出视口被回收 → 手势静默
+                    // 死亡 → 松手 onEnd 永不触发 → 自动滚动永不停止）
+                    items(
+                        count = recent.size,
+                        key = { i -> recent[i].source + ":" + recent[i].id }
+                    ) { i ->
+                        val song = recent[i]
+                        SongRow(
+                            song = song,
+                            isFavorite = favorites.any { it.sameAs(song) },
+                            isCurrent = currentSong?.sameAs(song) == true,
+                            onClick = { PlayerManager.setQueue(recent, i) },
+                            onToggleFavorite = { Store.toggleFavorite(song) },
+                            onAddToPlaylist = { onAddToPlaylist(song) },
+                            onRemove = { Store.removeRecent(song) },
+                            onDownload = { onDownload(song) },
+                            selectionMode = select.active,
+                            selected = select.isSelected(song),
+                            onSelect = { select.toggle(song) },
+                            modifier = if (select.active) Modifier else Modifier.dragReorderItem(dragState, i)
+                        )
+                    }
+                    item { Spacer(Modifier.height(8.dp)) }
                 }
-                item { Spacer(Modifier.height(8.dp)) }
+                // r65：拖动条目快照 overlay（条目回收不再导致消失）
+                DragReorderOverlay(dragState)
             }
         }
     }
