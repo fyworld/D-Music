@@ -41,7 +41,8 @@ import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
-import com.solara.music.ui.components.dragReorder
+import com.solara.music.ui.components.dragReorderItem
+import com.solara.music.ui.components.dragReorderSource
 import com.solara.music.ui.components.rememberDragReorderState
 import com.solara.music.ui.components.rememberMultiSelectState
 
@@ -174,7 +175,15 @@ fun RecentScreen(
         } else {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                // r64：手势检测移到容器层——条目滚出视口被回收不再
+                // 杀死进行中的拖动（「拖到边缘自动滚动 3-4 行后停止」
+                // 根因修复）
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .dragReorderSource(dragState, listState, enabled = !select.active) {
+                        0 until recent.size
+                    },
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // r60-3：key = 稳定标识（r52 教训——无 key 时组件按位置
@@ -197,7 +206,7 @@ fun RecentScreen(
                         selectionMode = select.active,
                         selected = select.isSelected(song),
                         onSelect = { select.toggle(song) },
-                        modifier = if (select.active) Modifier else Modifier.dragReorder(dragState, i)
+                        modifier = if (select.active) Modifier else Modifier.dragReorderItem(dragState, i)
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }

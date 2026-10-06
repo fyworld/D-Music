@@ -43,7 +43,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -985,15 +984,15 @@ suspend fun keepScrollAfterMove(
 }
 
 /**
- * 列表条目的长按拖动排序修饰符（r62 视觉让位架构）。
+ * 列表条目的拖动排序视觉修饰符（r64：从 dragReorder 拆分）。
  * 拖动条目：zIndex 置顶 + translationY = dragOffset（跟手）。
  * 其他条目：translationY = shiftOf(index)（让位平移，松手归零）。
  * [index] 必须是该条目在 LazyColumn 中的绝对下标。
+ * **不含手势**——手势统一在容器 dragReorderSource（r64 架构），
+ * 条目滚出视口被回收不再杀死进行中的拖动。
  */
 @Composable
-fun Modifier.dragReorder(dragState: DragReorderState, index: Int): Modifier {
-    val view = LocalView.current
-    val currentIndex by rememberUpdatedState(index)
+fun Modifier.dragReorderItem(dragState: DragReorderState, index: Int): Modifier {
     return this
         .zIndex(if (dragState.draggingIndex == index || dragState.settlingIndex == index) 1f else 0f)
         .graphicsLayer {
@@ -1004,29 +1003,66 @@ fun Modifier.dragReorder(dragState: DragReorderState, index: Int): Modifier {
                 dragState.shiftOf(index)
             }
         }
-        .pointerInput(Unit) {
-            detectDragGesturesAfterLongPress(
-                onDragStart = { offset ->
-                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                    dragState.onStart(currentIndex, offset.y)
-                    dragState.startAutoScroll()
-                },
-                onDrag = { change, amount ->
-                    change.consume()
-                    dragState.onDrag(amount.y)
-                },
-                onDragEnd = {
-                    // 手指只有一个——任何条目收到 UP 都意味着松手
-                    if (dragState.draggingIndex != null) dragState.onEnd()
-                },
-                onDragCancel = {
-                    // r62：数据不动，取消 = 恢复原状（无回滚需求）。
-                    // 只有拖动条目自己被取消才终止（滚动时其他条目被
-                    // 回收是常态，r56b 教训）
-                    if (dragState.draggingIndex == currentIndex) dragState.onCancel()
-                }
-            )
-        }
+}
+
+/**
+ * r64：长按拖动手势检测（容器层）——挂在 LazyColumn 的 modifier 上。
+ *
+ * **为什么从条目移到容器（r64 根因修复）**：
+ * r62 视觉让位架构下拖动中数据不动，拖动条目的布局槽位冻结在原
+ * 下标 d。自动滚动时视口移开，槽位滚出 LazyColumn 组合缓存区
+ * （视口 + 缓存若干行）→ 条目组件被回收 → 条目上的 pointerInput
+ * 协程被杀 → onDragCancel → onCancel → autoScrollJob 取消 →
+ * **滚动停止（用户报告「只能滚 3-4 行」——正是槽位到缓存区边界
+ * 的距离）**。
+ * 手势挂在容器上：容器永不回收，手势永不死亡；hit test 由容器
+ * 统一做（长按时找手指下的条目），与 iOS UITableView 同构
+ * （手势在 scrollView 上，不在 cell 上）。
+ *
+ * 长按定位条目：用 listState.layoutInfo.visibleItemsInfo 的
+ * offset/size 做命中判定（视口坐标），不依赖条目自身回调。
+ * [dragRange] 限定可拖动条目区间（与 DragReorderState.dragRange
+ * 同源——头部文件夹行/尾部 Spacer 不可拖）。
+ */
+@Composable
+fun Modifier.dragReorderSource(
+    dragState: DragReorderState,
+    listState: LazyListState,
+    /** r64：多选模式禁用拖动手势（原条目架构多选时条目无手势修饰符，
+     *  容器架构手势常驻——必须显式关，否则多选模式长按误触发拖动） */
+    enabled: Boolean = true,
+    dragRange: (() -> IntRange)? = null
+): Modifier {
+    val view = LocalView.current
+    return this.pointerInput(enabled) {
+        if (!enabled) return@pointerInput
+        detectDragGesturesAfterLongPress(
+            onDragStart = { offset ->
+                // 命中判定：手指位置 → 可见条目下标。
+                // r64：条目间有 8dp 间距（缝隙），offset+size 判定会漏
+                // ——缝隙归并到上方条目（用下一行 offset 作底界）
+                val infos = listState.layoutInfo.visibleItemsInfo
+                val hit = infos.firstOrNull { it.offset <= offset.y && offset.y < it.offset + it.size }
+                    ?: infos.lastOrNull { it.offset <= offset.y }
+                val index = hit?.index
+                val range = dragRange?.invoke() ?: (0 until listState.layoutInfo.totalItemsCount)
+                if (index == null || index !in range) return@detectDragGesturesAfterLongPress
+                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                dragState.onStart(index, offset.y - hit.offset)
+                dragState.startAutoScroll()
+            },
+            onDrag = { change, amount ->
+                change.consume()
+                dragState.onDrag(amount.y)
+            },
+            onDragEnd = {
+                if (dragState.draggingIndex != null) dragState.onEnd()
+            },
+            onDragCancel = {
+                if (dragState.draggingIndex != null) dragState.onCancel()
+            }
+        )
+    }
 }
 
 @Composable

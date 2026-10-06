@@ -55,7 +55,8 @@ import com.solara.music.ui.components.AddSongsToPlaylistSheet
 import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
-import com.solara.music.ui.components.dragReorder
+import com.solara.music.ui.components.dragReorderItem
+import com.solara.music.ui.components.dragReorderSource
 import com.solara.music.ui.components.keepScrollAfterMove
 import com.solara.music.ui.components.rememberDragReorderState
 import com.solara.music.ui.components.rememberMultiSelectState
@@ -130,7 +131,11 @@ fun PlaylistsScreen(
         } else {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                // r64：手势检测移到容器层（条目回收不再杀死拖动）
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .dragReorderSource(dragState, listState) { 0 until playlists.size },
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(playlists.size) { i ->
@@ -141,7 +146,7 @@ fun PlaylistsScreen(
                         } == true,
                         onClick = { openPlaylistId = playlists[i].id },
                         // v1.5.1 r49：长按拖动排序
-                        modifier = Modifier.dragReorder(dragState, i)
+                        modifier = Modifier.dragReorderItem(dragState, i)
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }
@@ -376,7 +381,13 @@ private fun PlaylistDetailScreen(
         } else {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                // r64：手势检测移到容器层（条目回收不再杀死拖动）
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .dragReorderSource(dragState, listState, enabled = !select.active) {
+                        0 until playlist.songs.size
+                    },
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 // r52：key = 歌曲稳定标识——交换后组件跟随数据移动，
@@ -415,7 +426,7 @@ private fun PlaylistDetailScreen(
                         selectionMode = select.active,
                         selected = select.isSelected(song),
                         onSelect = { select.toggle(song) },
-                        modifier = if (select.active) Modifier else Modifier.dragReorder(dragState, i)
+                        modifier = if (select.active) Modifier else Modifier.dragReorderItem(dragState, i)
                     )
                 }
                 item { Spacer(Modifier.height(8.dp)) }

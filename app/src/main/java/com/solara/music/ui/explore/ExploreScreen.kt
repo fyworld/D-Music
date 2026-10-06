@@ -51,7 +51,8 @@ import com.solara.music.ui.components.EmptyState
 import com.solara.music.ui.components.SaveAsPlaylistDialog
 import com.solara.music.ui.components.SelectionTopBar
 import com.solara.music.ui.components.SongRow
-import com.solara.music.ui.components.dragReorder
+import com.solara.music.ui.components.dragReorderItem
+import com.solara.music.ui.components.dragReorderSource
 import com.solara.music.ui.components.rememberDragReorderState
 import com.solara.music.ui.components.rememberMultiSelectState
 import com.solara.music.ui.components.saveSongsToNewPlaylist
@@ -213,7 +214,13 @@ fun ExploreScreen(
                     }
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        // r64：手势检测移到容器层（条目回收不再杀死拖动）
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .dragReorderSource(dragState, listState, enabled = !select.active) {
+                                0 until results.size
+                            },
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         // r60-3：key = 稳定标识（r52 教训——无 key 时组件按位置
@@ -240,7 +247,7 @@ fun ExploreScreen(
                                 selectionMode = select.active,
                                 selected = select.isSelected(song),
                                 onSelect = { select.toggle(song) },
-                                modifier = if (select.active) Modifier else Modifier.dragReorder(dragState, i)
+                                modifier = if (select.active) Modifier else Modifier.dragReorderItem(dragState, i)
                             )
                         }
                         item { Spacer(Modifier.height(8.dp)) }
