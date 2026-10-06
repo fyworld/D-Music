@@ -315,12 +315,23 @@ fun AboutScreen(onBack: () -> Unit) {
                 )
             }
 
-            // v1.5.1 r70h：致谢（参考项目与数据来源，详见 GitHub README 致谢节）
-            Text(
-                text = "致谢：Solara · lx-music · GD音乐台（参考项目与数据来源，详见 GitHub README）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // v1.5.1 r70h：致谢（参考项目与数据来源，可点击跳转，详见 GitHub README 致谢节）
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "致谢（参考项目与数据来源）：",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                LinkRow(text = "Solara") {
+                    uriHandler.openUri("https://github.com/akudamatata/Solara")
+                }
+                LinkRow(text = "lx-music") {
+                    uriHandler.openUri("https://github.com/lyswhut/lx-music-mobile")
+                }
+                LinkRow(text = "GD音乐台") {
+                    uriHandler.openUri("https://music.gdstudio.xyz")
+                }
+            }
         }
 
         // v1.4.18：打赏入口（自愿，不影响任何功能）——lite 纯净版不显示
