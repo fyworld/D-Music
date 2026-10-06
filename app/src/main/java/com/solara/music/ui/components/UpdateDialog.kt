@@ -40,7 +40,7 @@ fun UpdateDialog(
 
     AlertDialog(
         onDismissRequest = { if (dlState !is UpdateManager.DownloadState.Progress) onDismiss() },
-        title = { Text("发现新版本") },
+        title = { Text(if (info.crossUpgrade) "发现新版本（版本切换）" else "发现新版本") },
         text = {
             Column {
                 Text(
@@ -49,6 +49,17 @@ fun UpdateDialog(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(Modifier.height(8.dp))
+                // v1.5.1 r70k：lite 跨包升级说明（v1.6.0 起单版本，lite 回落 full）
+                if (info.crossUpgrade) {
+                    Text(
+                        text = "从本版本起应用合并为单一版本。安装后为全新应用（与当前版本共存），" +
+                            "收藏、歌单等数据不随包名迁移；已下载的音乐在公共目录 Music/D_Music，" +
+                            "新版本可直接扫描使用。确认无误后可卸载当前版本。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 // 更新说明（去 markdown 标记，最多 12 行防超长）
                 val notes = remember(info.notes) { plainNotes(info.notes) }
                 Text(

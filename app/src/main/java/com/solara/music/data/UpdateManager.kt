@@ -63,7 +63,11 @@ object UpdateManager {
         val notes: String,            // 更新说明（markdown 纯文本化后展示）
         val apkUrl: String,           // 与当前 flavor 匹配的 APK 下载直链
         val apkSize: Long,            // APK 字节数（进度分母；0 = 未知）
-        val htmlUrl: String           // Release 页面（备用手动下载）
+        val htmlUrl: String,          // Release 页面（备用手动下载）
+        // v1.5.1 r70k：lite 用户跨包升级标记——lite 找不到 lite 资产回落 full APK
+        // 时置 true（v1.6.0 起单版本）。装 full 是新装共存（包名不同），lite
+        // 保留可手动卸载；UI 据此显示迁移说明。
+        val crossUpgrade: Boolean = false
     )
 
     /** 下载状态。 */
@@ -316,15 +320,28 @@ object UpdateManager {
                 throw IllegalStateException("latest is draft/prerelease")
             }
 
-            // 找与当前 flavor 匹配的 APK 资产：lite 版找文件名含 "lite"，full 版找不含
+            // 找与当前 flavor 匹配的 APK 资产：lite 版找文件名含 "lite"，full 版找不含。
+            // v1.5.1 r70k：lite 找不到 lite 资产时回落 full APK（跨包升级）——
+            // v1.6.0 起单版本（只发 full），存量 lite 用户经此通道自动升级。
+            // 版本比较天然兼容：currentVersion() 已剥掉 "-lite" 后缀。
             val assets = json.optJSONArray("assets") ?: throw IllegalStateException("no assets")
             var apkObj: JSONObject? = null
+            var liteFallback = false
             for (i in 0 until assets.length()) {
                 val a = assets.optJSONObject(i) ?: continue
                 val name = a.optString("name", "").lowercase()
                 if (!name.endsWith(".apk")) continue
                 val isLiteAsset = name.contains("lite")
                 if (isLiteAsset == isLite) { apkObj = a; break }
+            }
+            if (apkObj == null && isLite) {
+                for (i in 0 until assets.length()) {
+                    val a = assets.optJSONObject(i) ?: continue
+                    val name = a.optString("name", "").lowercase()
+                    if (name.endsWith(".apk") && !name.contains("lite")) {
+                        apkObj = a; liteFallback = true; break
+                    }
+                }
             }
             val apk = apkObj ?: throw IllegalStateException("no matching apk for flavor")
 
@@ -334,7 +351,8 @@ object UpdateManager {
                 notes = json.optString("body", "").trim(),
                 apkUrl = apk.optString("browser_download_url", ""),
                 apkSize = apk.optLong("size", 0L),
-                htmlUrl = json.optString("html_url", "")
+                htmlUrl = json.optString("html_url", ""),
+                crossUpgrade = liteFallback
             )
         }
     }
