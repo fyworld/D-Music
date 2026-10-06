@@ -128,26 +128,8 @@ app/src/main/java/com/solara/music/
 
 ## API 与音源说明
 
-### 聚合 API（默认）
-
-默认聚合接口为 GD音乐台免费 API（`https://music-api.gdstudio.xyz/api.php`），接口契约：
-
-| 类型 | 参数 |
-|------|------|
-| 搜索 | `?types=search&source=netease&name=关键词&count=30&pages=1` |
-| 播放 | `?types=url&id=歌曲ID&source=音源&br=320` |
-| 歌词 | `?types=lyric&id=歌词ID&source=音源` |
-| 封面 | `?types=pic&id=封面ID&source=音源&size=300` |
-
-接口被拦截时，可在 App「设置 → 聚合 API 地址」中替换为自建或备用地址。
-
-### 自定义音源（v1.5.1+）
-
-支持导入 lx-music 生态的 `.js` 音源脚本（在脚本运行沙箱中执行，与主程序隔离）。启用后：
-
-- 搜索页可直连各平台公开接口搜歌（界面内以「源 1 ~ 源 5」等通用代号显示）
-- 取歌、歌词、封面由用户导入的脚本或内置公开接口提供
-- 本项目**不内置、不维护、不分发任何音源脚本**，脚本由用户自行获取与导入，使用行为由用户自行负责
+- 默认聚合接口为 GD音乐台免费 API（`https://music-api.gdstudio.xyz/api.php`）
+- 支持导入 lx-music 生态的 `.js` 音源脚本
 
 ## 项目协议
 
