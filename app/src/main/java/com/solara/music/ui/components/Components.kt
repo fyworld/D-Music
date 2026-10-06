@@ -50,6 +50,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -681,8 +683,22 @@ class DragReorderState(
     var snapshotWidth by mutableFloatStateOf(0f)
         private set
 
-    /** r65：截图回调（onStart 时由容器调用，在主线程外截图）。 */
-    internal var snapshotProvider: ((index: Int) -> android.graphics.Bitmap?)? = null
+    /**
+     * r65b：截图启动器（onStart 时由容器调用）——**异步**截图，
+     * 完成后回调 [onSnapshotReady]。
+     * r65 首版用 View.draw 同步截图：Compose 内容经 RenderNode
+     * 硬件层渲染，画到软件 Canvas 是**空白**（drawRenderNode 软件画
+     * 布不支持）→ 快照全透明 → overlay 无内容 + 条目 alpha=0 →
+     * 「长按条目直接消失」。r65b 改 PixelCopy（API 26+）读窗口硬件
+     * 帧，内容保真；截图就绪前条目自渲染兜底（dragReorderItem），
+     * 就绪后无缝切换——任何失败路径条目都不会凭空消失。
+     */
+    internal var snapshotProvider: ((index: Int) -> Unit)? = null
+
+    /** r65b：截图完成回调（PixelCopy listener 主线程回调）。 */
+    internal fun onSnapshotReady(index: Int, bmp: android.graphics.Bitmap?) {
+        if (draggingIndex == index && bmp != null) dragSnapshot = bmp
+    }
 
     fun onStart(index: Int, yInItem: Float) {
         settleJob?.cancel()
@@ -703,12 +719,13 @@ class DragReorderState(
         if (self in 0 until infos.size - 1) {
             itemStride = (infos[self + 1].offset - infos[self].offset).toFloat()
         }
-        // r65：截图 + 快照几何（overlay 渲染，条目回收不再导致消失）。
+        // r65b：截图 + 快照几何（overlay 渲染，条目回收不再导致消失）。
         // 条目都是 fillMaxWidth——快照全宽，left=0，width=视口宽
         snapshotTopY = dragBaseTopY
         snapshotLeftX = 0f
         snapshotWidth = listState.layoutInfo.viewportSize.width.toFloat()
-        dragSnapshot = snapshotProvider?.invoke(index)
+        dragSnapshot = null
+        snapshotProvider?.invoke(index)
     }
 
     /**
@@ -1041,8 +1058,15 @@ fun Modifier.dragReorderItem(dragState: DragReorderState, index: Int): Modifier 
             val dragging = dragState.draggingIndex == index
             val settling = dragState.settlingIndex == index
             if (dragging) {
-                // r65：拖动期间隐藏（快照接管视觉）
-                alpha = 0f
+                if (dragState.dragSnapshot != null) {
+                    // r65：快照接管视觉，条目隐藏
+                    alpha = 0f
+                } else {
+                    // r65b 防御：快照未就绪/截图失败时条目自己渲染跟手
+                    //（r64 行为兜底）——条目绝不凭空消失
+                    alpha = 1f
+                    translationY = dragState.dragOffset
+                }
             } else {
                 alpha = 1f
                 translationY = if (settling) {
@@ -1082,6 +1106,18 @@ fun DragReorderOverlay(dragState: DragReorderState) {
 }
 
 /**
+ * r65b：View → Window（API 24 兼容——View.getWindow() 是 API 28+）。
+ */
+private fun windowOf(view: android.view.View): android.view.Window? {
+    var ctx: android.content.Context? = view.context
+    while (ctx is android.content.ContextWrapper) {
+        if (ctx is android.app.Activity) return ctx.window
+        ctx = ctx.baseContext
+    }
+    return null
+}
+
+/**
  * r64：长按拖动手势检测（容器层）——挂在 LazyColumn 的 modifier 上。
  *
  * **为什么从条目移到容器（r64 根因修复）**：
@@ -1110,33 +1146,87 @@ fun Modifier.dragReorderSource(
     dragRange: (() -> IntRange)? = null
 ): Modifier {
     val view = LocalView.current
-    // r65：截图 provider——View.draw 整个容器到视口大小 Bitmap，
-    // 裁剪条目区域（条目必然在视口内，长按的条目可见）。
-    // onDragStart 在主线程，View.draw 同步可行（无 GPU 等待）。
+    // r65b：LazyColumn 在组合根中的位置——PixelCopy 拷贝的是窗口
+    // 硬件帧（窗口原点），而 info.offset 是 LazyList 视口坐标，
+    // 两者差一个列表区顶部偏移（顶栏+Tab 高度）。onPlace 时记录
+    // positionInRoot，截图裁剪时补上这个差值。
+    val listTopInRoot = remember { mutableFloatStateOf(0f) }
+    // r65b：截图 provider——PixelCopy（API 26+）异步读窗口硬件帧。
+    // r65 首版 View.draw 软件渲染 Compose 内容空白（RenderNode
+    // 硬件层画不进软件 Canvas），改 PixelCopy 保真。截图期间条目
+    // 自渲染兜底（dragReorderItem），就绪后无缝切换。
     dragState.snapshotProvider = { index ->
-        try {
-            val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
-            if (info == null) {
-                null
-            } else {
+        val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }
+        if (info == null) {
+            android.util.Log.d("DragR65", "snapshot: index $index not visible, skip")
+        } else if (android.os.Build.VERSION.SDK_INT < 26) {
+            // API 24/25 无 PixelCopy——条目自渲染兜底（r64 行为）
+            android.util.Log.d("DragR65", "snapshot: API<26 skip")
+        } else {
+            try {
                 val w = view.width.coerceAtLeast(1)
                 val h = view.height.coerceAtLeast(1)
-                val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
-                val canvas = android.graphics.Canvas(bmp)
-                view.draw(canvas)
-                val top = info.offset.coerceIn(0, h - 1)
-                val bottom = (info.offset + info.size).coerceAtMost(h)
+                // 条目在 AndroidComposeView 坐标系中的区域
+                //（列表区偏移 + 条目视口偏移）
+                val topInView = (listTopInRoot.floatValue + info.offset).toInt()
+                val top = topInView.coerceIn(0, h - 1)
+                val bottom = (topInView + info.size).coerceAtMost(h)
                 if (bottom - top <= 0) {
-                    null
+                    android.util.Log.d("DragR65", "snapshot: empty clip region, skip")
                 } else {
-                    android.graphics.Bitmap.createBitmap(bmp, 0, top, w, bottom - top)
+                    // 窗口坐标 = AndroidComposeView 在窗口中的位置 + 条目在 view 中的位置
+                    //（PixelCopy(Window) 的 srcRect 用窗口坐标系）
+                    val loc = IntArray(2)
+                    view.getLocationInWindow(loc)
+                    val winTop = (loc[1] + top).coerceAtLeast(0)
+                    val winBottom = (loc[1] + bottom).coerceAtLeast(winTop + 1)
+                    val dst = android.graphics.Bitmap.createBitmap(
+                        w, winBottom - winTop, android.graphics.Bitmap.Config.ARGB_8888
+                    )
+                    val window = windowOf(view)
+                    if (window == null) {
+                        android.util.Log.d("DragR65", "snapshot: no window, skip")
+                    } else {
+                        android.view.PixelCopy.request(
+                            window,
+                            android.graphics.Rect(0, winTop, w, winBottom),
+                            dst,
+                            { result ->
+                                if (result == android.view.PixelCopy.SUCCESS) {
+                                    // 采样诊断：非透明像素计数
+                                    var nonTransparent = 0
+                                    val stepX = (dst.width / 8).coerceAtLeast(1)
+                                    val stepY = (dst.height / 8).coerceAtLeast(1)
+                                    for (x in 0 until dst.width step stepX) {
+                                        for (y in 0 until dst.height step stepY) {
+                                            if (dst.getPixel(x, y) ushr 24 != 0) nonTransparent++
+                                        }
+                                    }
+                                    android.util.Log.d(
+                                        "DragR65",
+                                        "snapshot ok: index=$index w=${dst.width} h=${dst.height} " +
+                                            "winTop=$winTop viewTop=$top listTop=${listTopInRoot.floatValue} " +
+                                            "nonTransparent=$nonTransparent"
+                                    )
+                                    dragState.onSnapshotReady(index, dst)
+                                } else {
+                                    android.util.Log.d("DragR65", "snapshot failed: result=$result")
+                                }
+                            },
+                            android.os.Handler(android.os.Looper.getMainLooper())
+                        )
+                    }
                 }
+            } catch (e: Exception) {
+                android.util.Log.d("DragR65", "snapshot exception: ${e.message}")
             }
-        } catch (_: Exception) {
-            null
         }
     }
-    return this.pointerInput(enabled) {
+    return this
+        .onGloballyPositioned { coords ->
+            listTopInRoot.floatValue = coords.positionInRoot().y
+        }
+        .pointerInput(enabled) {
         if (!enabled) return@pointerInput
         detectDragGesturesAfterLongPress(
             onDragStart = { offset ->
