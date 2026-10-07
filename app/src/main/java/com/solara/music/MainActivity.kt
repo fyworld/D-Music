@@ -23,9 +23,25 @@ import com.solara.music.ui.theme.SolaraTheme
 
 class MainActivity : ComponentActivity() {
 
+    /**
+     * v1.5.1 r70q：权限请求串行化。
+     *
+     * 此前 onCreate 里通知权限与音频/存储权限背靠背 launch——Android 权限
+     * 弹窗一次只显示一个，Activity Result API 连续 launch 两个请求时第二个
+     * 会被系统权限队列静默丢弃（不弹窗、不回调）。表现为 Android 10+ 全新
+     * 安装只弹「是否允许发送通知」，媒体读取权限从未申请 → 卸载重装恢复
+     * 落空（无权限时 MediaStore 查询只能看到自己贡献的条目 = 空）。
+     *
+     * 修复：通知权限回调（无论允许/拒绝）后再发起音频/存储权限请求，
+     * 保证每个弹窗独立显示、回调必然到达。
+     */
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* 即使拒绝也不影响播放，只是系统媒体通知可能被系统隐藏 */ }
+    ) {
+        // 即使拒绝也不影响播放，只是系统媒体通知可能被系统隐藏。
+        // 回调到达后串行发起下一个权限请求（r70q，见类头注释）。
+        ensureAudioReadPermission()
+    }
 
     /** 音频读取权限：用于扫描本地歌曲（卸载重装后 MediaStore owner 关系已断）。 */
     private val audioPermissionLauncher = registerForActivityResult(
@@ -68,8 +84,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        ensureNotificationPermission()
-        ensureAudioReadPermission()
+        // v1.5.1 r70q：权限请求串行化——单一入口。Android 13+ 且通知权限
+        // 未授予时先弹通知权限，音频/存储权限在其回调后链式发起（背靠背
+        // launch 第二个请求会被系统权限队列吞掉，见 launcher 注释）；
+        // 其余情况（10-12 无通知权限一说 / 13+ 已授予）直接发起音频权限。
+        ensureStartupPermissions()
 
         // 启动后台播放服务（Service 在 onCreate 中创建 ExoPlayer 并注入 PlayerManager）
         PlayerManager.ensureService(applicationContext)
@@ -129,15 +148,26 @@ class MainActivity : ComponentActivity() {
         runCatching { unregisterReceiver(exitReceiver) }
     }
 
-    /** Android 13+ 必须运行时申请通知权限，否则后台播放的系统媒体通知不会显示。 */
-    private fun ensureNotificationPermission() {
+    /**
+     * v1.5.1 r70q：启动权限串行入口。
+     *
+     * Android 13+ 且通知权限未授予：先弹通知权限，回调（无论允许/拒绝）
+     * 里链式发起音频权限请求。
+     * 其余情况：直接发起音频/存储权限请求。
+     * 目的：保证任意时刻只有一个权限请求在途，每个弹窗独立显示、
+     * 回调必然到达（背靠背 launch 会丢请求，见 launcher 注释）。
+     */
+    private fun ensureStartupPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
                 PackageManager.PERMISSION_GRANTED
             if (!granted) {
+                // 先弹通知权限；音频权限在回调后链式发起
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
             }
         }
+        ensureAudioReadPermission()
     }
 
     /**
