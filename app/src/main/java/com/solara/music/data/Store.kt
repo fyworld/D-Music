@@ -223,6 +223,11 @@ object Store {
 
     // ---------- 备份：读 ----------
 
+    /**
+     * v1.5.1 r70r：恢复判定放宽——v2 备份可能只有设置/校准数据而
+     * 四项列表全空（如只调了设置没收藏任何歌），此时也应恢复。
+     * 旧版备份（version=1）无新键，行为与原来一致。
+     */
     private fun tryRestoreFromBackup(): Boolean = runCatching {
         val ctx = appContextRef ?: return false
         val text = readBackupText(ctx) ?: return false
@@ -232,7 +237,20 @@ object Store {
         val pls = playlistsFromJsonArray(root.optJSONArray(KEY_PLAYLISTS))
         val q = songsFromJsonArray(root.optJSONArray(KEY_QUEUE))
         val qi = root.optInt(KEY_QUEUE_INDEX, -1)
-        if (fav.isEmpty() && rec.isEmpty() && pls.isEmpty() && q.isEmpty()) return false
+        val dls = songsFromJsonArray(root.optJSONArray(KEY_DOWNLOADS))
+        val settingsJson = root.optString(KEY_SETTINGS).takeIf { it.isNotBlank() }
+        val hasV2Data = settingsJson != null ||
+            root.has(KEY_PLAY_MODE) ||
+            dls.isNotEmpty() ||
+            root.has(KEY_LYRIC_OFFSETS) ||
+            root.has(KEY_LYRIC_TIMESTAMPS) ||
+            root.has(KEY_LOCAL_SONG_ORDERS) ||
+            root.has(KEY_PLAYED_DURATIONS) ||
+            root.has(KEY_SCAN_FOLDER) ||
+            root.has(KEY_LOCAL_BROWSE_PATH)
+        if (fav.isEmpty() && rec.isEmpty() && pls.isEmpty() && q.isEmpty() && !hasV2Data) {
+            return false
+        }
 
         prefs.edit().apply {
             if (fav.isNotEmpty()) putString(KEY_FAVORITES, songsToJsonArray(fav).toString())
@@ -242,9 +260,25 @@ object Store {
                 putString(KEY_QUEUE, songsToJsonArray(q).toString())
                 putInt(KEY_QUEUE_INDEX, qi)
             }
+            // v1.5.1 r70r：v2 新增字段（有才写，空对象跳过）
+            if (dls.isNotEmpty()) putString(KEY_DOWNLOADS, songsToJsonArray(dls).toString())
+            if (settingsJson != null) putString(KEY_SETTINGS, settingsJson)
+            root.optString(KEY_PLAY_MODE).takeIf { it.isNotBlank() }?.let { putString(KEY_PLAY_MODE, it) }
+            restoreJsonMap(KEY_LYRIC_OFFSETS, root)
+            restoreJsonMap(KEY_LYRIC_TIMESTAMPS, root)
+            restoreJsonMap(KEY_LOCAL_SONG_ORDERS, root)
+            restoreJsonMap(KEY_PLAYED_DURATIONS, root)
+            root.optString(KEY_SCAN_FOLDER).takeIf { it.isNotBlank() }?.let { putString(KEY_SCAN_FOLDER, it) }
+            root.optString(KEY_LOCAL_BROWSE_PATH).takeIf { it.isNotBlank() }?.let { putString(KEY_LOCAL_BROWSE_PATH, it) }
         }.commit()
         true
     }.getOrDefault(false)
+
+    /** v1.5.1 r70r：恢复备份里的 JSON map 键（非空才写）。 */
+    private fun SharedPreferences.Editor.restoreJsonMap(key: String, root: JSONObject) {
+        val raw = root.optJSONObject(key) ?: return
+        if (raw.length() > 0) putString(key, raw.toString())
+    }
 
     private fun readBackupText(context: Context): String? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) readBackupQ(context)
@@ -342,16 +376,33 @@ object Store {
         if (f.exists()) f.readText() else null
     }.getOrNull()
 
-    /** 异步写备份（数据变更时调用）。 */
+    /**
+     * 异步写备份（数据变更时调用）。
+     * v1.5.1 r70r：备份范围 v1→v2——在收藏/最近/歌单/队列之外新增
+     * 设置、播放模式、下载记录、歌词偏移、逐句打点、本地歌自定义
+     * 顺序、已播时长表、扫描文件夹、本地浏览位置。重装后这些用户
+     * 校准数据（心血最重的部分）随收藏/歌单一并恢复。旧版恢复逻辑
+     * 读不到新键自动忽略，向前兼容。
+     */
     private fun backupAsync() {
         val ctx = appContextRef ?: return
         val json = JSONObject().apply {
-            put("version", 1)
+            put("version", 2)
             put(KEY_FAVORITES, songsToJsonArray(favorites.value))
             put(KEY_RECENT, songsToJsonArray(recent.value))
             put(KEY_PLAYLISTS, playlistsToJsonArray(playlists.value))
             put(KEY_QUEUE, songsToJsonArray(queueSnapshot))
             put(KEY_QUEUE_INDEX, queueIndexSnapshot)
+            // v1.5.1 r70r：v2 新增字段
+            put(KEY_DOWNLOADS, songsToJsonArray(downloads.value))
+            put(KEY_SETTINGS, settingsToJson(settings.value))
+            prefs.getString(KEY_PLAY_MODE, null)?.let { put(KEY_PLAY_MODE, it) }
+            put(KEY_LYRIC_OFFSETS, readLyricOffsets())
+            put(KEY_LYRIC_TIMESTAMPS, readLyricTimestamps())
+            put(KEY_LOCAL_SONG_ORDERS, readLocalSongOrders())
+            put(KEY_PLAYED_DURATIONS, readPlayedDurations())
+            prefs.getString(KEY_SCAN_FOLDER, null)?.let { put(KEY_SCAN_FOLDER, it) }
+            prefs.getString(KEY_LOCAL_BROWSE_PATH, null)?.let { put(KEY_LOCAL_BROWSE_PATH, it) }
         }.toString()
         backupExecutor.execute {
             runCatching {
@@ -368,12 +419,14 @@ object Store {
         settings.value = next
         prefs.edit().putString(KEY_SETTINGS, settingsToJson(next)).apply()
         MusicApi.baseUrl = next.apiBaseUrl.ifBlank { MusicApi.DEFAULT_BASE_URL }
+        backupAsync() // v1.5.1 r70r：设置进备份
     }
 
     // ---------- 播放模式（v1.4.26 持久化） ----------
 
     fun savePlayMode(mode: com.solara.music.player.PlayMode) {
         prefs.edit().putString(KEY_PLAY_MODE, mode.name).apply()
+        backupAsync() // v1.5.1 r70r：播放模式进备份
     }
 
     fun readPlayMode(): com.solara.music.player.PlayMode? = runCatching {
@@ -725,11 +778,13 @@ object Store {
         // 最新下载优先可见，对齐任务列表新任务插头部的行为）
         downloads.value = listOf(song) + downloads.value
         writeSongs(KEY_DOWNLOADS, downloads.value)
+        backupAsync() // v1.5.1 r70r：下载记录进备份
     }
 
     fun removeDownload(song: Song) {
         downloads.value = downloads.value.filterNot { it.sameAs(song) }
         writeSongs(KEY_DOWNLOADS, downloads.value)
+        backupAsync() // v1.5.1 r70r
     }
 
     /**
@@ -764,6 +819,7 @@ object Store {
         if (songs.isEmpty()) return
         downloads.value = downloads.value.filterNot { d -> songs.any { it.sameAs(d) } }
         writeSongs(KEY_DOWNLOADS, downloads.value)
+        backupAsync() // v1.5.1 r70r
     }
 
     /**
@@ -773,6 +829,7 @@ object Store {
     fun replaceDownloads(songs: List<Song>) {
         downloads.value = songs
         writeSongs(KEY_DOWNLOADS, songs)
+        backupAsync() // v1.5.1 r70r
     }
 
     /** 本地歌曲列表手动拖动排序。 */
@@ -780,6 +837,7 @@ object Store {
         val next = downloads.value.moved(from, to) ?: return false
         downloads.value = next
         writeSongs(KEY_DOWNLOADS, next)
+        backupAsync() // v1.5.1 r70r
         return true
     }
 
@@ -814,6 +872,7 @@ object Store {
         )
         downloads.value = downloads.value.toMutableList().apply { set(idx, updated) }
         writeSongs(KEY_DOWNLOADS, downloads.value)
+        backupAsync() // v1.5.1 r70r
         // 封面缓存 key 迁移：旧文件名 → 新文件名
         migrateLocalCoverKey(song, updated)
         // v1.4.58 第七轮：收藏/歌单/最近播放同步替换——文件名与列表
@@ -832,6 +891,7 @@ object Store {
         scanFolder.value = path
         if (path == null) prefs.edit().remove(KEY_SCAN_FOLDER).apply()
         else prefs.edit().putString(KEY_SCAN_FOLDER, path).apply()
+        backupAsync() // v1.5.1 r70r：扫描文件夹进备份
     }
 
     // ---------- 本地歌曲页浏览位置（v1.4.58） ----------
@@ -843,6 +903,7 @@ object Store {
         localBrowsePath.value = path
         if (path == null) prefs.edit().remove(KEY_LOCAL_BROWSE_PATH).apply()
         else prefs.edit().putString(KEY_LOCAL_BROWSE_PATH, path).apply()
+        backupAsync() // v1.5.1 r70r：浏览位置进备份
     }
 
     // ---------- 本地歌曲每文件夹自定义顺序（v1.5.1 r59） ----------
@@ -899,6 +960,7 @@ object Store {
         val o = readLocalSongOrders()
         o.put(dirKey, org.json.JSONArray(next))
         writeLocalSongOrders(o)
+        backupAsync() // v1.5.1 r70r：本地歌自定义顺序进备份
         return true
     }
 
@@ -973,6 +1035,7 @@ object Store {
         val o = readLyricOffsets()
         if (offsetSec == 0f) o.remove(key) else o.put(key, offsetSec.toDouble())
         prefs.edit().putString(KEY_LYRIC_OFFSETS, o.toString()).apply()
+        backupAsync() // v1.5.1 r70r：歌词偏移进备份
     }
 
     private fun readLyricOffsets(): org.json.JSONObject =
@@ -1012,6 +1075,7 @@ object Store {
             o.put(key, arr)
         }
         prefs.edit().putString(KEY_LYRIC_TIMESTAMPS, o.toString()).apply()
+        backupAsync() // v1.5.1 r70r：逐句打点进备份
     }
 
     private fun readLyricTimestamps(): org.json.JSONObject =
@@ -1174,6 +1238,7 @@ object Store {
         if (o.optString(key) == text) return
         o.put(key, text)
         prefs.edit().putString(KEY_PLAYED_DURATIONS, o.toString()).apply()
+        backupAsync() // v1.5.1 r70r：已播时长表进备份
     }
 
     private fun readPlayedDurations(): org.json.JSONObject =
