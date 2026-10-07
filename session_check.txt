@@ -1,4 +1,0 @@
-﻿      package=com.solara.music
-      launchIntent=null
-===ALL===
-      state=PlaybackState {state=0, position=0, buffered position=0, speed=0.0, updated=70945909, actions=7339775, custom actions=[], active item id=0, error=null}
